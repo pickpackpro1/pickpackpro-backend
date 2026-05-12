@@ -1,0 +1,407 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DIRECT_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model app_settings {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  working_days             Json
+  dispatch_lead_time_hours Int      @default(72)
+  company_name             String
+  company_address          Json
+  vat_number               String?
+  logo_path                String?
+  bank_details             Json
+  resend_api_key           String?
+  sending_domain           String?
+  notification_toggles     Json
+  updated_at               DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model audit_logs {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String   @db.Uuid
+  user_role    String
+  user_email   String
+  action       String
+  entity_type  String
+  entity_id    String   @db.Uuid
+  before_value Json?
+  after_value  Json?
+  ip_address   String?
+  user_agent   String?
+  timestamp    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([entity_type, entity_id], map: "idx_audit_logs_entity")
+}
+
+model client_price_lists {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  client_id       String          @db.Uuid
+  service_code    String
+  tier            PricingTier?
+  rate            Decimal         @db.Decimal
+  effective_from  DateTime        @db.Timestamptz(6)
+  notes           String?
+  created_by      String          @db.Uuid
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  clients         clients         @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  service_catalog service_catalog @relation(fields: [service_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model clients {
+  id                    String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_name          String
+  contact_name          String
+  email                 String
+  phone                 String?
+  billing_address       Json
+  shipping_address      Json?
+  vat_registered        Boolean
+  vat_number            String?
+  pricing_tier_override PricingTier?
+  payment_method        String               @default("bank_transfer")
+  status                ClientStatus         @default(active)
+  created_at            DateTime             @default(now()) @db.Timestamptz(6)
+  created_by            String               @db.Uuid
+  soft_deleted_at       DateTime?            @db.Timestamptz(6)
+  client_price_lists    client_price_lists[]
+  invoices              invoices[]
+  products              products[]
+  shipments             shipments[]
+  uploaded_files        uploaded_files[]
+  users                 users[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model invoice_line_items {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invoice_id            String   @db.Uuid
+  shipment_id           String?  @db.Uuid
+  shipment_line_item_id String?  @db.Uuid
+  service_code          String
+  description           String
+  qty                   Decimal  @db.Decimal
+  unit_rate             Decimal  @db.Decimal
+  amount                Decimal  @db.Decimal
+  vat_rate              Decimal  @db.Decimal
+  vat_amount            Decimal  @db.Decimal
+  sort_order            Int
+  invoices              invoices @relation(fields: [invoice_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model invoices {
+  id                                                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  client_id                                            String               @db.Uuid
+  invoice_number                                       String               @unique
+  invoice_date                                         DateTime             @db.Date
+  due_date                                             DateTime             @db.Date
+  invoice_type                                         InvoiceType
+  period_start                                         DateTime?            @db.Date
+  period_end                                           DateTime?            @db.Date
+  status                                               InvoiceStatus        @default(draft)
+  subtotal                                             Decimal              @db.Decimal
+  vat_amount                                           Decimal              @db.Decimal
+  total                                                Decimal              @db.Decimal
+  pdf_file_id                                          String?              @db.Uuid
+  xlsx_file_id                                         String?              @db.Uuid
+  sent_at                                              DateTime?            @db.Timestamptz(6)
+  paid_at                                              DateTime?            @db.Timestamptz(6)
+  notes                                                String?
+  created_at                                           DateTime             @default(now()) @db.Timestamptz(6)
+  created_by                                           String               @db.Uuid
+  invoice_line_items                                   invoice_line_items[]
+  clients                                              clients              @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  uploaded_files_invoices_pdf_file_idTouploaded_files  uploaded_files?      @relation("invoices_pdf_file_idTouploaded_files", fields: [pdf_file_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "invoices_pdf_file_fkey")
+  uploaded_files_invoices_xlsx_file_idTouploaded_files uploaded_files?      @relation("invoices_xlsx_file_idTouploaded_files", fields: [xlsx_file_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "invoices_xlsx_file_fkey")
+
+  @@index([client_id], map: "idx_invoices_client_id")
+  @@index([status], map: "idx_invoices_status")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model notifications {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String           @db.Uuid
+  type          NotificationType
+  title         String
+  body          String
+  link_url      String
+  read_at       DateTime?        @db.Timestamptz(6)
+  email_sent_at DateTime?        @db.Timestamptz(6)
+  created_at    DateTime         @default(now()) @db.Timestamptz(6)
+  users         users            @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "idx_notifications_user_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model outbound_boxes {
+  id                         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shipment_id                String          @db.Uuid
+  box_number                 Int
+  box_type                   BoxType
+  box_size                   BoxSize?
+  length_cm                  Decimal         @db.Decimal
+  width_cm                   Decimal         @db.Decimal
+  height_cm                  Decimal         @db.Decimal
+  weight_kg                  Decimal         @db.Decimal
+  contents                   Json            @default("[]")
+  fba_shipping_label_file_id String?         @db.Uuid
+  label_uploaded_at          DateTime?       @db.Timestamptz(6)
+  dispatched_at              DateTime?       @db.Timestamptz(6)
+  created_at                 DateTime        @default(now()) @db.Timestamptz(6)
+  uploaded_files             uploaded_files? @relation(fields: [fba_shipping_label_file_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "ob_fba_label_file_fkey")
+  shipments                  shipments       @relation(fields: [shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shipment_id], map: "idx_outbound_boxes_shipment")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model products {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  client_id           String                @db.Uuid
+  product_name        String
+  sku                 String
+  default_fnsku       String?
+  length_cm           Decimal               @db.Decimal
+  width_cm            Decimal               @db.Decimal
+  height_cm           Decimal               @db.Decimal
+  weight_kg           Decimal               @db.Decimal
+  hazmat_flag         Boolean               @default(false)
+  expiry_tracked      Boolean               @default(false)
+  lot_tracked         Boolean               @default(false)
+  needs_bundling      Boolean               @default(false)
+  bundle_size         Int?
+  image_path          String?
+  active              Boolean               @default(true)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  soft_deleted_at     DateTime?             @db.Timestamptz(6)
+  clients             clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  shipment_line_items shipment_line_items[]
+
+  @@unique([client_id, sku])
+  @@index([client_id], map: "idx_products_client_id")
+}
+
+model service_catalog {
+  id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code                 String               @unique
+  display_name         String
+  description          String?
+  unit_type            UnitType
+  pricing_type         PricingType
+  default_tier_pricing Json
+  vat_applicable       Boolean
+  billable             Boolean              @default(true)
+  active               Boolean              @default(true)
+  sort_order           Int
+  client_price_lists   client_price_lists[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model shipment_line_items {
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shipment_id          String          @db.Uuid
+  product_id           String          @db.Uuid
+  fnsku                String
+  fnsku_label_file_id  String?         @db.Uuid
+  qty_expected         Int
+  qty_received         Int?
+  dispatch_qty         Int?
+  qty_discrepancy_flag Boolean         @default(false)
+  discrepancy_notes    String?
+  services_selected    Json            @default("[]")
+  service_status       Json            @default("{}")
+  custom_services      Json?
+  expiry_date          DateTime?       @db.Date
+  lot_number           String?
+  created_at           DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime        @default(now()) @db.Timestamptz(6)
+  products             products        @relation(fields: [product_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  shipments            shipments       @relation(fields: [shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  uploaded_files       uploaded_files? @relation(fields: [fnsku_label_file_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "sli_fnsku_label_file_fkey")
+
+  @@index([product_id], map: "idx_line_items_product_id")
+  @@index([shipment_id], map: "idx_line_items_shipment_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model shipments {
+  id                                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  client_id                           String                @db.Uuid
+  reference                           String                @unique
+  status                              ShipmentStatus        @default(draft)
+  expected_arrival_date               DateTime              @db.Date
+  actual_arrival_date                 DateTime?             @db.Date
+  estimated_dispatch_date             DateTime?             @db.Date
+  dispatched_date                     DateTime?             @db.Date
+  completed_date                      DateTime?             @db.Date
+  client_notes                        String?
+  submitted_at                        DateTime?             @db.Timestamptz(6)
+  submitted_by                        String?               @db.Uuid
+  received_by                         String?               @db.Uuid
+  assigned_to                         String?               @db.Uuid
+  created_at                          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at                          DateTime              @default(now()) @db.Timestamptz(6)
+  soft_deleted_at                     DateTime?             @db.Timestamptz(6)
+  outbound_boxes                      outbound_boxes[]
+  shipment_line_items                 shipment_line_items[]
+  users_shipments_assigned_toTousers  users?                @relation("shipments_assigned_toTousers", fields: [assigned_to], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  clients                             clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_shipments_received_byTousers  users?                @relation("shipments_received_byTousers", fields: [received_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_shipments_submitted_byTousers users?                @relation("shipments_submitted_byTousers", fields: [submitted_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  staff_check_ins                     staff_check_ins[]
+
+  @@index([expected_arrival_date], map: "idx_shipments_arrival")
+  @@index([client_id], map: "idx_shipments_client_id")
+  @@index([status], map: "idx_shipments_status")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model staff_check_ins {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String    @db.Uuid
+  shipment_id      String    @db.Uuid
+  checked_in_at    DateTime  @default(now()) @db.Timestamptz(6)
+  checked_out_at   DateTime? @db.Timestamptz(6)
+  duration_minutes Int?
+  notes            String?
+  shipments        shipments @relation(fields: [shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users            users     @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([shipment_id], map: "idx_staff_check_ins_shipment")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model uploaded_files {
+  id                                             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  uploader_user_id                               String                @db.Uuid
+  client_id                                      String                @db.Uuid
+  file_type                                      FileType
+  original_filename                              String
+  storage_path                                   String
+  file_size_bytes                                Int
+  mime_type                                      String
+  linked_entity_type                             String?
+  linked_entity_id                               String?               @db.Uuid
+  uploaded_at                                    DateTime              @default(now()) @db.Timestamptz(6)
+  invoices_invoices_pdf_file_idTouploaded_files  invoices[]            @relation("invoices_pdf_file_idTouploaded_files")
+  invoices_invoices_xlsx_file_idTouploaded_files invoices[]            @relation("invoices_xlsx_file_idTouploaded_files")
+  outbound_boxes                                 outbound_boxes[]
+  shipment_line_items                            shipment_line_items[]
+  clients                                        clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([client_id], map: "idx_uploaded_files_client")
+}
+
+model users {
+  id                                      String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                                   String            @unique
+  role                                    Role
+  client_id                               String?           @db.Uuid
+  full_name                               String
+  phone                                   String?
+  active                                  Boolean           @default(true)
+  created_at                              DateTime          @default(now()) @db.Timestamptz(6)
+  last_login_at                           DateTime?         @db.Timestamptz(6)
+  notifications                           notifications[]
+  shipments_shipments_assigned_toTousers  shipments[]       @relation("shipments_assigned_toTousers")
+  shipments_shipments_received_byTousers  shipments[]       @relation("shipments_received_byTousers")
+  shipments_shipments_submitted_byTousers shipments[]       @relation("shipments_submitted_byTousers")
+  staff_check_ins                         staff_check_ins[]
+  clients                                 clients?          @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_client")
+}
+
+enum BoxSize {
+  small
+  medium
+  large
+  oversize
+}
+
+enum BoxType {
+  box
+  pallet
+}
+
+enum ClientStatus {
+  active
+  suspended
+}
+
+enum FileType {
+  fnsku_label
+  fba_shipping_label
+  invoice_pdf
+  invoice_xlsx
+  product_image
+  other
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  paid
+  overdue
+  cancelled
+}
+
+enum InvoiceType {
+  monthly
+  ad_hoc
+}
+
+enum NotificationType {
+  shipment_submitted
+  shipment_received
+  discrepancy_flagged
+  invoice_generated
+  invoice_sent
+  label_uploaded
+  shipment_dispatched
+}
+
+enum PricingTier {
+  silver
+  gold
+  platinum
+  others
+}
+
+enum PricingType {
+  tiered
+  flat
+}
+
+enum Role {
+  admin
+  staff
+  client
+}
+
+enum ShipmentStatus {
+  draft
+  submitted
+  pending_arrival
+  received
+  in_progress
+  prepped
+  dispatched
+  completed
+}
+
+enum UnitType {
+  per_unit
+  per_pallet
+  per_box
+  per_cbm_week
+  flat
+}
