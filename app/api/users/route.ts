@@ -33,8 +33,9 @@ export async function POST(req: Request) {
       ? await supabaseAdmin.auth.admin.createUser({ email: body.email, password: body.password, email_confirm: true })
       : await supabaseAdmin.auth.admin.inviteUserByEmail(body.email);
     if (auth.error) return error(auth.error.message, 400);
+    if (!auth.data.user?.id) return error("Supabase user id was not returned", 400);
     const user = await prisma.users.create({
-      data: { email: body.email, full_name: body.name, role: body.role, client_id: body.clientId ?? null },
+      data: { id: auth.data.user.id, email: body.email, full_name: body.name, role: body.role, client_id: body.clientId ?? null },
     });
     return success(user, 201);
   } catch (err) {

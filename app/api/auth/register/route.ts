@@ -28,9 +28,11 @@ export async function POST(req: Request) {
       app_metadata: { role: body.role, clientId: body.clientId ?? null },
     });
     if (auth.error) return error(auth.error.message, 400);
+    if (!auth.data.user?.id) return error("Supabase user id was not returned", 400);
 
     const user = await prisma.users.create({
       data: {
+        id: auth.data.user.id,
         email: body.email,
         full_name: body.name,
         role: body.role,

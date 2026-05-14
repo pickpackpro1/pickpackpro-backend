@@ -10,7 +10,9 @@ if (!supabaseUrl) throw new Error("Missing Supabase URL");
 if (!anonKey) throw new Error("Missing Supabase anon key");
 if (!serviceRoleKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
 
-export const supabaseAnon = createClient(supabaseUrl, anonKey);
+export const supabaseAnon = createClient(supabaseUrl, anonKey, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
 
 export const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },

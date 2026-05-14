@@ -22,10 +22,11 @@ export async function POST(req: Request) {
       data: { role: body.role, clientId: body.clientId ?? null, name: body.name },
     });
     if (invite.error) return error(invite.error.message, 400);
+    if (!invite.data.user?.id) return error("Supabase user id was not returned", 400);
     const user = await prisma.users.upsert({
       where: { email: body.email },
       update: { full_name: body.name, role: body.role, client_id: body.clientId ?? null, active: true },
-      create: { email: body.email, full_name: body.name, role: body.role, client_id: body.clientId ?? null },
+      create: { id: invite.data.user.id, email: body.email, full_name: body.name, role: body.role, client_id: body.clientId ?? null },
     });
     return success(user, 201);
   } catch (err) {
