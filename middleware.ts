@@ -5,7 +5,7 @@ const ALLOWED_ORIGIN = "https://pick-pack-pro-virid.vercel.app";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-User-Id",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-User-Id, Cache-Control",
   "Access-Control-Allow-Credentials": "true",
 };
 
