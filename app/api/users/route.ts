@@ -11,7 +11,7 @@ const schema = z.object({
   password: z.string().min(6).optional(),
   name: z.string().min(1),
   role: z.nativeEnum(Role),
-  clientId: z.string().uuid().optional().nullable(),
+  clientCompanyEmail: z.string().email().optional().nullable(),
 });
 
 export async function GET(req: Request) {
@@ -28,14 +28,24 @@ export async function POST(req: Request) {
   try {
     await requireRole(req, ["admin"]);
     const body = await json(req, schema);
-    if (body.role === "client" && !body.clientId) return error("clientId is required for CLIENT users", 400);
+    let resolvedClientId: string | null = null;
+    if (body.clientCompanyEmail) {
+      const client = await prisma.clients.findFirst({
+        where: { email: body.clientCompanyEmail },
+      });
+      if (!client) return error("No client company found with that email", 404);
+      resolvedClientId = client.id;
+    }
+    if (body.role === "client" && !resolvedClientId) {
+      return error("clientCompanyEmail is required for client users", 400);
+    }
     const auth = body.password
       ? await supabaseAdmin.auth.admin.createUser({ email: body.email, password: body.password, email_confirm: true })
       : await supabaseAdmin.auth.admin.inviteUserByEmail(body.email);
     if (auth.error) return error(auth.error.message, 400);
     if (!auth.data.user?.id) return error("Supabase user id was not returned", 400);
     const user = await prisma.users.create({
-      data: { id: auth.data.user.id, email: body.email, full_name: body.name, role: body.role, client_id: body.clientId ?? null },
+      data: { id: auth.data.user.id, email: body.email, full_name: body.name, role: body.role, client_id: resolvedClientId },
     });
     return success(user, 201);
   } catch (err) {
