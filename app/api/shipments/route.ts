@@ -104,6 +104,17 @@ export async function POST(req: Request) {
         include: { shipment_line_items: { include: { products: true } } },
       });
     });
+    await prisma.audit_logs.create({
+      data: {
+        user_id: user.userId,
+        user_email: user.email,
+        user_role: user.role,
+        action: "shipment.created",
+        entity_type: "shipment",
+        entity_id: shipment.id,
+        after_value: JSON.parse(JSON.stringify(shipment)),
+      },
+    });
     return success(shipment, 201);
   } catch (err) {
     return handleApiError(err);

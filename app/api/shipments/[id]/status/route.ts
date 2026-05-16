@@ -10,7 +10,7 @@ const schema = z.object({ status: z.nativeEnum(ShipmentStatus) });
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
-    await requireRole(req, ["admin", "staff"]);
+    const user = await requireRole(req, ["admin", "staff"]);
     const body = await json(req, schema);
     const shipment = await prisma.shipments.findUnique({
       where: { id: params.id },
@@ -25,6 +25,18 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         updated_at: new Date(),
         dispatched_date: body.status === "dispatched" ? new Date() : undefined,
         completed_date: body.status === "completed" ? new Date() : undefined,
+      },
+    });
+    await prisma.audit_logs.create({
+      data: {
+        user_id: user.userId,
+        user_email: user.email,
+        user_role: user.role,
+        action: "shipment.status_changed",
+        entity_type: "shipment",
+        entity_id: params.id,
+        before_value: { status: shipment.status },
+        after_value: { status: updated.status },
       },
     });
     return success(updated);

@@ -35,8 +35,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
-    await requireRole(req, ["admin"]);
+    const user = await requireRole(req, ["admin"]);
     const body = await json(req, patchSchema);
+    const before = await prisma.clients.findUnique({ where: { id: params.id } });
+    if (!before) throw new ApiError("Client not found", 404);
     const client = await prisma.clients.update({
       where: { id: params.id },
       data: {
@@ -46,6 +48,18 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         phone: body.contactPhone,
         pricing_tier_override: body.pricingTier,
         status: body.status,
+      },
+    });
+    await prisma.audit_logs.create({
+      data: {
+        user_id: user.userId,
+        user_email: user.email,
+        user_role: user.role,
+        action: "client.updated",
+        entity_type: "client",
+        entity_id: params.id,
+        before_value: JSON.parse(JSON.stringify(before)),
+        after_value: JSON.parse(JSON.stringify(client)),
       },
     });
     return success(client);

@@ -45,6 +45,17 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       }
       return { discrepancies, status: allReceived ? "received" : undefined };
     });
+    await prisma.audit_logs.create({
+      data: {
+        user_id: user.userId,
+        user_email: user.email,
+        user_role: user.role,
+        action: "shipment.received",
+        entity_type: "shipment",
+        entity_id: params.id,
+        after_value: JSON.parse(JSON.stringify(result)),
+      },
+    });
     return success(result);
   } catch (err) {
     return handleApiError(err);
