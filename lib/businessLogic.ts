@@ -130,21 +130,25 @@ export async function generateInvoice(
   });
   const tier = client.pricing_tier_override ?? "silver";
   let subtotal = 0;
+  let totalVat = 0;
   const lineItems = Object.entries(serviceUnits).map(([service, units], index) => {
     const custom = prices.find((price) => price.service_code === service);
     const svc = catalog.find((entry) => entry.code === service);
     const tierPricing = (svc?.default_tier_pricing ?? {}) as Record<string, number>;
     const unitRate = Number(custom?.rate ?? tierPricing[tier] ?? 0);
     const amount = units * unitRate;
+    const vatRate = client.vat_registered && svc?.vat_applicable ? 0.2 : 0;
+    const vatAmount = amount * vatRate;
     subtotal += amount;
+    totalVat += vatAmount;
     return {
       service_code: service,
       description: svc?.display_name ?? service,
       qty: units,
       unit_rate: unitRate,
       amount,
-      vat_rate: 0,
-      vat_amount: 0,
+      vat_rate: vatRate,
+      vat_amount: vatAmount,
       sort_order: index + 1,
     };
   });
@@ -162,8 +166,8 @@ export async function generateInvoice(
       period_start: periodStart,
       period_end: periodEnd,
       subtotal,
-      vat_amount: 0,
-      total: subtotal,
+      vat_amount: totalVat,
+      total: subtotal + totalVat,
       created_by: createdBy,
       invoice_line_items: { create: lineItems },
     },
