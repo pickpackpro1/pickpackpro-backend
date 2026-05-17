@@ -26,7 +26,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    await requireRole(req, ["admin"]);
+    const actor = await requireRole(req, ["admin"]);
     const body = await json(req, schema);
     let resolvedClientId: string | null = null;
     if (body.clientCompanyEmail) {
@@ -47,6 +47,19 @@ export async function POST(req: Request) {
     const user = await prisma.users.create({
       data: { id: auth.data.user.id, email: body.email, full_name: body.name, role: body.role, client_id: resolvedClientId },
     });
+    if (!body.password) {
+      await prisma.audit_logs.create({
+        data: {
+          user_id: actor.userId,
+          user_email: actor.email,
+          user_role: actor.role,
+          action: "user.invited",
+          entity_type: "user",
+          entity_id: user.id,
+          after_value: JSON.parse(JSON.stringify(user)),
+        },
+      });
+    }
     return success(user, 201);
   } catch (err) {
     return handleApiError(err);

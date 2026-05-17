@@ -60,6 +60,17 @@ export async function POST(req: Request) {
         created_by: user.userId,
       },
     });
+    await prisma.audit_logs.create({
+      data: {
+        user_id: user.userId,
+        user_email: user.email,
+        user_role: user.role,
+        action: "client.created",
+        entity_type: "client",
+        entity_id: client.id,
+        after_value: JSON.parse(JSON.stringify(client)),
+      },
+    });
     return success(client, 201);
   } catch (err) {
     return handleApiError(err);

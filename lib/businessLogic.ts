@@ -102,7 +102,7 @@ export async function generateInvoice(
     where: {
       client_id: clientId,
       status: { in: ["dispatched", "completed"] },
-      updated_at: { gte: periodStart, lte: periodEnd },
+      actual_arrival_date: { gte: periodStart, lte: periodEnd },
     },
     include: { shipment_line_items: { include: { products: true } } },
   });

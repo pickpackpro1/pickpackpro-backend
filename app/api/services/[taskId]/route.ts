@@ -17,7 +17,7 @@ export async function PATCH(req: Request, { params }: { params: { taskId: string
     const body = await json(req, schema);
     const [shipmentItemId, serviceType] = params.taskId.split(":");
     if (!shipmentItemId || !serviceType) throw new ApiError("taskId must be shipmentItemId:serviceType", 400);
-    const updated = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const item = await tx.shipment_line_items.findUnique({ where: { id: shipmentItemId } });
       if (!item) throw new ApiError("Service task not found", 404);
       if ((body.status === "DONE" || body.status === "done") && body.unitsDone !== (item.qty_received ?? 0)) {
@@ -25,6 +25,7 @@ export async function PATCH(req: Request, { params }: { params: { taskId: string
       }
       const current = (item.service_status as Record<string, unknown> | null) ?? {};
       const nextStatus = body.status.toUpperCase();
+      const previousStatus = current[serviceType] ?? null;
       const next = {
         ...current,
         [serviceType]: nextStatus,
@@ -45,9 +46,21 @@ export async function PATCH(req: Request, { params }: { params: { taskId: string
         return (selected ?? []).every((service) => statuses?.[service] === "DONE");
       });
       if (allDone) await tx.shipments.update({ where: { id: item.shipment_id }, data: { status: "prepped", updated_at: new Date() } });
-      return line;
+      return { line, previousStatus, nextStatus };
     });
-    return success(updated);
+    await prisma.audit_logs.create({
+      data: {
+        user_id: user.userId,
+        user_email: user.email,
+        user_role: user.role,
+        action: "service.status_changed",
+        entity_type: "service",
+        entity_id: shipmentItemId,
+        before_value: { shipmentItemId, serviceType, status: result.previousStatus },
+        after_value: { shipmentItemId, serviceType, status: result.nextStatus },
+      },
+    });
+    return success(result.line);
   } catch (err) {
     return handleApiError(err);
   }
