@@ -21,6 +21,7 @@ const createSchema = z.object({
   clientId: z.string().uuid(),
   notes: z.string().optional().nullable(),
   expectedArrivalDate: z.coerce.date().optional(),
+  isDraft: z.boolean().default(false),
   items: z.array(itemSchema).min(1),
 });
 
@@ -68,11 +69,11 @@ export async function POST(req: Request) {
         data: {
           client_id: body.clientId,
           reference,
-          status: "submitted",
+          status: body.isDraft ? "draft" : "submitted",
           expected_arrival_date: body.expectedArrivalDate ?? new Date(),
           client_notes: body.notes ?? null,
-          submitted_at: new Date(),
-          submitted_by: user.userId,
+          submitted_at: body.isDraft ? null : new Date(),
+          submitted_by: body.isDraft ? null : user.userId,
           shipment_line_items: {
             create: body.items.map((item) => ({
               fnsku: item.fnskuLabel ?? item.sku,
