@@ -10,7 +10,7 @@ export async function GET(req: Request) {
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
-    const [client, activeShipments, recentShipments, openInvoices, spend, items] = await Promise.all([
+    const [client, activeShipments, recentShipments, openInvoices, spend, items, outstandingBalance] = await Promise.all([
       prisma.clients.findUnique({ where: { id: user.clientId } }),
       prisma.shipments.count({ where: { client_id: user.clientId, status: { notIn: ["completed", "dispatched"] } } }),
       prisma.shipments.findMany({ where: { client_id: user.clientId }, orderBy: { created_at: "desc" }, take: 5 }),
@@ -19,6 +19,13 @@ export async function GET(req: Request) {
       prisma.shipment_line_items.aggregate({
         where: { shipments: { client_id: user.clientId }, created_at: { gte: monthStart } },
         _sum: { qty_received: true },
+      }),
+      prisma.invoices.aggregate({
+        where: {
+          client_id: user.clientId,
+          status: { in: ["sent", "overdue"] },
+        },
+        _sum: { total: true },
       }),
     ]);
     const units = items._sum.qty_received ?? 0;
@@ -32,6 +39,7 @@ export async function GET(req: Request) {
       recentShipments,
       openInvoices,
       totalSpendThisYear: Number(spend._sum.total ?? 0),
+      outstandingBalance: Number(outstandingBalance._sum.total ?? 0),
     });
   } catch (err) {
     return handleApiError(err);

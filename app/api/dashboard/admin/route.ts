@@ -10,6 +10,11 @@ export async function GET(req: Request) {
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
     const arrivalsStart = new Date();
     arrivalsStart.setHours(0, 0, 0, 0);
@@ -35,6 +40,10 @@ export async function GET(req: Request) {
       staff,
       arrivingShipments,
       outstandingClientShipments,
+      unitsReceivedThisWeek,
+      shipmentsPreppedhisWeek,
+      shipmentsDispatchedThisWeek,
+      discrepanciesFlaggedToday,
     ] = await Promise.all([
       prisma.clients.count({ where: { status: "active", soft_deleted_at: null } }),
       prisma.shipments.count({ where: { status: { notIn: ["completed", "dispatched"] }, soft_deleted_at: null } }),
@@ -54,12 +63,32 @@ export async function GET(req: Request) {
       prisma.shipments.count({
         where: { status: { in: ["received", "in_progress"] }, soft_deleted_at: null },
       }),
+      prisma.shipment_line_items.aggregate({
+        where: { shipments: { actual_arrival_date: { gte: weekStart } } },
+        _sum: { qty_received: true },
+      }),
+      prisma.shipments.count({
+        where: { status: "prepped", updated_at: { gte: weekStart } },
+      }),
+      prisma.shipments.count({
+        where: { status: "dispatched", dispatched_date: { gte: weekStart } },
+      }),
+      prisma.shipment_line_items.count({
+        where: {
+          qty_discrepancy_flag: true,
+          updated_at: { gte: todayStart },
+        },
+      }),
     ]);
     return success({
       totalClients,
       activeShipments,
       outstandingClientShipments,
       arrivingShipments,
+      unitsReceivedThisWeek,
+      shipmentsPreppedhisWeek,
+      shipmentsDispatchedThisWeek,
+      discrepanciesFlaggedToday,
       shipmentsByStatus: Object.fromEntries(byStatus.map((row) => [row.status, row._count])),
       revenueThisMonth: Number(revenue._sum.total ?? 0),
       topClients,
