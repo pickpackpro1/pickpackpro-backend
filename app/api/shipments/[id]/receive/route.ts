@@ -56,6 +56,28 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         after_value: JSON.parse(JSON.stringify(result)),
       },
     });
+    const shipment = await prisma.shipments.findUnique({
+      where: { id: params.id },
+      select: { client_id: true, reference: true },
+    });
+    if (shipment) {
+      const clientUser = await prisma.users.findFirst({
+        where: { client_id: shipment.client_id, role: "client" },
+      });
+      if (clientUser) {
+        await prisma.notifications.create({
+          data: {
+            user_id: clientUser.id,
+            type: result.discrepancies.length > 0 ? "discrepancy_flagged" : "shipment_received",
+            title: result.discrepancies.length > 0 ? "Discrepancy Flagged" : "Shipment Received",
+            body: result.discrepancies.length > 0
+              ? `Discrepancy found in shipment ${shipment.reference}.`
+              : `Your shipment ${shipment.reference} has been received at the warehouse.`,
+            link_url: `/shipments/${params.id}`,
+          },
+        });
+      }
+    }
     return success(result);
   } catch (err) {
     return handleApiError(err);

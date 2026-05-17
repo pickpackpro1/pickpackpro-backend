@@ -115,6 +115,16 @@ export async function POST(req: Request) {
         after_value: JSON.parse(JSON.stringify(shipment)),
       },
     });
+    const admins = await prisma.users.findMany({ where: { role: "admin", active: true } });
+    await prisma.notifications.createMany({
+      data: admins.map((admin) => ({
+        user_id: admin.id,
+        type: "shipment_submitted",
+        title: "New Shipment Submitted",
+        body: `New shipment ${shipment.reference} submitted by client.`,
+        link_url: `/shipments/${shipment.id}`,
+      })),
+    });
     return success(shipment, 201);
   } catch (err) {
     return handleApiError(err);
