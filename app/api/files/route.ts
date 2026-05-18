@@ -76,6 +76,27 @@ export async function POST(req: Request) {
         where: { id: entityId },
         data: { fba_shipping_label_file_id: record.id, label_uploaded_at: new Date() },
       });
+      const box = await prisma.outbound_boxes.findUnique({
+        where: { id: entityId },
+        include: { shipments: true },
+      });
+      if (box) {
+        const staffToNotify = box.shipments.assigned_to
+          ? [box.shipments.assigned_to]
+          : (await prisma.users.findMany({
+              where: { role: "staff", active: true },
+            })).map((staff) => staff.id);
+
+        await prisma.notifications.createMany({
+          data: staffToNotify.map((userId) => ({
+            user_id: userId,
+            type: "label_uploaded",
+            title: "FBA Label Uploaded",
+            body: `FBA label uploaded for shipment ${box.shipments.reference}.`,
+            link_url: `/shipments/${box.shipments.id}`,
+          })),
+        });
+      }
     }
     if (entityType === "invoice" && (fileType === "invoice_pdf" || fileType === "invoice_xlsx")) {
       await prisma.invoices.update({

@@ -9,6 +9,26 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       where: { id: params.id },
       data: { status: "sent", sent_at: new Date() },
     });
+    const invoiceWithClient = await prisma.invoices.findUnique({
+      where: { id: params.id },
+      include: { clients: true },
+    });
+    if (invoiceWithClient) {
+      const clientUser = await prisma.users.findFirst({
+        where: { client_id: invoiceWithClient.client_id, role: "client" },
+      });
+      if (clientUser) {
+        await prisma.notifications.create({
+          data: {
+            user_id: clientUser.id,
+            type: "invoice_sent",
+            title: "Invoice Sent",
+            body: `Invoice ${invoiceWithClient.invoice_number} for £${invoiceWithClient.total} is due on ${invoiceWithClient.due_date}.`,
+            link_url: "/invoices",
+          },
+        });
+      }
+    }
     await prisma.audit_logs.create({
       data: {
         user_id: user.userId,
