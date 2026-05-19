@@ -29,6 +29,7 @@ export async function POST(req: Request) {
       return error("clientCompanyEmail is required for client users", 400);
     }
     const invite = await supabaseAdmin.auth.admin.inviteUserByEmail(body.email, {
+      redirectTo: `${process.env.FRONTEND_URL}/set-password`,
       data: { role: body.role, clientId: resolvedClientId, name: body.name },
     });
     if (invite.error) return error(invite.error.message, 400);
