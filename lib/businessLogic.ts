@@ -154,7 +154,7 @@ export async function generateInvoice(
   });
 
   const invoiceNumber = await generateInvoiceNumber(prisma as PrismaClient, periodEnd);
-  const dueDate = new Date(periodEnd.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const dueDate = new Date(periodEnd.getTime() + 14 * 24 * 60 * 60 * 1000);
 
   return prisma.invoices.create({
     data: {

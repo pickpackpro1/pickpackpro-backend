@@ -8,7 +8,6 @@ import { json } from "@/lib/validation";
 
 const schema = z.object({
   email: z.string().email(),
-  password: z.string().min(6).optional(),
   name: z.string().min(1),
   role: z.nativeEnum(Role),
   clientCompanyEmail: z.string().email().optional().nullable(),
@@ -39,27 +38,25 @@ export async function POST(req: Request) {
     if (body.role === "client" && !resolvedClientId) {
       return error("clientCompanyEmail is required for client users", 400);
     }
-    const auth = body.password
-      ? await supabaseAdmin.auth.admin.createUser({ email: body.email, password: body.password, email_confirm: true })
-      : await supabaseAdmin.auth.admin.inviteUserByEmail(body.email);
+    const auth = await supabaseAdmin.auth.admin.inviteUserByEmail(body.email, {
+      data: { role: body.role, clientId: resolvedClientId, name: body.name },
+    });
     if (auth.error) return error(auth.error.message, 400);
     if (!auth.data.user?.id) return error("Supabase user id was not returned", 400);
     const user = await prisma.users.create({
       data: { id: auth.data.user.id, email: body.email, full_name: body.name, role: body.role, client_id: resolvedClientId },
     });
-    if (!body.password) {
-      await prisma.audit_logs.create({
-        data: {
-          user_id: actor.userId,
-          user_email: actor.email,
-          user_role: actor.role,
-          action: "user.invited",
-          entity_type: "user",
-          entity_id: user.id,
-          after_value: JSON.parse(JSON.stringify(user)),
-        },
-      });
-    }
+    await prisma.audit_logs.create({
+      data: {
+        user_id: actor.userId,
+        user_email: actor.email,
+        user_role: actor.role,
+        action: "user.invited",
+        entity_type: "user",
+        entity_id: user.id,
+        after_value: JSON.parse(JSON.stringify(user)),
+      },
+    });
     return success(user, 201);
   } catch (err) {
     return handleApiError(err);

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { supabaseAdmin } from "@/lib/supabase";
 import { json } from "@/lib/validation";
 
 const createSchema = z.object({
@@ -71,7 +72,37 @@ export async function POST(req: Request) {
         after_value: JSON.parse(JSON.stringify(client)),
       },
     });
-    return success(client, 201);
+    let inviteError = false;
+    try {
+      const invite = await supabaseAdmin.auth.admin.inviteUserByEmail(body.contactEmail, {
+        data: { role: "client", clientId: client.id, name: body.contactName ?? body.companyName },
+      });
+      if (invite.error || !invite.data.user?.id) {
+        inviteError = true;
+        console.error(invite.error ?? new Error("Supabase user id was not returned"));
+      } else {
+        await prisma.users.upsert({
+          where: { email: body.contactEmail },
+          update: {
+            full_name: body.contactName ?? body.companyName,
+            role: "client",
+            client_id: client.id,
+            active: true,
+          },
+          create: {
+            id: invite.data.user.id,
+            email: body.contactEmail,
+            full_name: body.contactName ?? body.companyName,
+            role: "client",
+            client_id: client.id,
+          },
+        });
+      }
+    } catch (err) {
+      inviteError = true;
+      console.error(err);
+    }
+    return success(inviteError ? { ...client, inviteError: true } : client, 201);
   } catch (err) {
     return handleApiError(err);
   }
