@@ -26,7 +26,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       where: { id: params.id },
       include: {
         clients: true,
-        shipment_line_items: { include: { products: true } },
+        shipment_line_items: {
+          include: {
+            products: true,
+            uploaded_files: true,
+          },
+        },
         outbound_boxes: true,
         staff_check_ins: true,
       },

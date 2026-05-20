@@ -80,6 +80,14 @@ export async function GET(req: Request) {
         },
       }),
     ]);
+    const staffUserIds = staff.map((row) => row.user_id);
+    const staffUsers = await prisma.users.findMany({
+      where: { id: { in: staffUserIds } },
+      select: { id: true, full_name: true, email: true },
+    });
+    const staffNameMap = new Map(
+      staffUsers.map((user) => [user.id, user.full_name || user.email])
+    );
     return success({
       totalClients,
       activeShipments,
@@ -92,7 +100,11 @@ export async function GET(req: Request) {
       shipmentsByStatus: Object.fromEntries(byStatus.map((row) => [row.status, row._count])),
       revenueThisMonth: Number(revenue._sum.total ?? 0),
       topClients,
-      staffActivity: staff.map((row) => ({ staffId: row.user_id, hoursThisMonth: (row._sum.duration_minutes ?? 0) / 60 })),
+      staffActivity: staff.map((row) => ({
+        staffId: row.user_id,
+        name: staffNameMap.get(row.user_id) ?? `Staff ${row.user_id.slice(0, 8)}`,
+        hoursThisMonth: (row._sum.duration_minutes ?? 0) / 60,
+      })),
     });
   } catch (err) {
     return handleApiError(err);

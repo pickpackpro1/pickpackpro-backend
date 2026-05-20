@@ -22,16 +22,27 @@ export async function GET(req: Request) {
     const entityType = url.searchParams.get("entityType") ?? undefined;
     const entityId = url.searchParams.get("entityId") ?? undefined;
     const clientId = entityType && entityId ? await clientIdForEntity(entityType, entityId, user.clientId) : user.clientId;
-    if (clientId) await requireClientAccess(req, clientId);
+    const resolvedClientId = user.role === "client" ? user.clientId! : clientId;
+    if (resolvedClientId) await requireClientAccess(req, resolvedClientId);
     const files = await prisma.uploaded_files.findMany({
       where: {
-        client_id: (user.role === "client" ? user.clientId! : clientId) ?? undefined,
+        ...(resolvedClientId ? { client_id: resolvedClientId } : {}),
         linked_entity_type: entityType,
         linked_entity_id: entityId,
       },
       orderBy: { uploaded_at: "desc" },
     });
-    return success(files);
+    const filesWithUrls = files.map((file) => {
+      const { data } = supabaseAdmin.storage
+        .from(bucketFor(file.file_type))
+        .getPublicUrl(file.storage_path);
+      return {
+        ...file,
+        url: data.publicUrl,
+        publicUrl: data.publicUrl,
+      };
+    });
+    return success(filesWithUrls);
   } catch (err) {
     return handleApiError(err);
   }
@@ -66,11 +77,25 @@ export async function POST(req: Request) {
         linked_entity_id: entityId,
       },
     });
-    if (entityType === "label" || (entityType === "item" && fileType === "fnsku_label")) {
+    // Link when entityType is 'item' or 'label' (line item UUID passed directly)
+    if ((entityType === "label" || entityType === "item") && fileType === "fnsku_label") {
       await prisma.shipment_line_items.update({
         where: { id: entityId },
         data: { fnsku_label_file_id: record.id, updated_at: new Date() },
       });
+    }
+
+    // Link when entityType is 'shipment' (client uploads against the whole shipment)
+    if (entityType === "shipment" && fileType === "fnsku_label") {
+      const lineItems = await prisma.shipment_line_items.findMany({
+        where: { shipment_id: entityId, fnsku_label_file_id: null },
+      });
+      if (lineItems.length > 0) {
+        await prisma.shipment_line_items.updateMany({
+          where: { shipment_id: entityId, fnsku_label_file_id: null },
+          data: { fnsku_label_file_id: record.id, updated_at: new Date() },
+        });
+      }
     }
     if (entityType === "box" && fileType === "fba_shipping_label") {
       await prisma.outbound_boxes.update({
@@ -165,7 +190,15 @@ export async function POST(req: Request) {
         data: fileType === "invoice_pdf" ? { pdf_file_id: record.id } : { xlsx_file_id: record.id },
       });
     }
-    return success({ url: path, fileRecordId: record.id }, 201);
+    const { data: publicData } = supabaseAdmin.storage
+      .from(bucket)
+      .getPublicUrl(path);
+    return success({
+      url: publicData.publicUrl,
+      publicUrl: publicData.publicUrl,
+      storagePath: path,
+      fileRecordId: record.id,
+    }, 201);
   } catch (err) {
     return handleApiError(err);
   }

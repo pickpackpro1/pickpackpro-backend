@@ -70,7 +70,7 @@ export async function POST(req: Request) {
         data: {
           client_id: body.clientId,
           reference,
-          status: body.isDraft ? "draft" : "submitted",
+          status: body.isDraft ? "draft" : "pending_arrival",
           expected_arrival_date: body.expectedArrivalDate ?? new Date(),
           client_notes: body.notes ?? null,
           submitted_at: body.isDraft ? null : new Date(),
