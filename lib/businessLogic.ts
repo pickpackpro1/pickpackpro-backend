@@ -107,51 +107,111 @@ export async function generateInvoice(
     include: { shipment_line_items: { include: { products: true } } },
   });
 
-  const serviceUnits: Record<string, number> = {};
-  for (const shipment of shipments) {
-    for (const item of shipment.shipment_line_items) {
-      const billingUnits = getBillingUnits(item);
-      const selected = item.services_selected as string[] | null;
-      const statuses = item.service_status as Record<string, string> | null;
-      for (const service of selected ?? []) {
-        if (statuses?.[service] === "DONE" || statuses?.[service] === "done") {
-          serviceUnits[service] = (serviceUnits[service] ?? 0) + billingUnits;
-        }
-      }
-    }
-  }
-
-  const catalog = await prisma.service_catalog.findMany({
-    where: { code: { in: Object.keys(serviceUnits) } },
-  });
+  const catalog = await prisma.service_catalog.findMany();
   const prices = await prisma.client_price_lists.findMany({
-    where: { client_id: clientId, service_code: { in: Object.keys(serviceUnits) } },
+    where: { client_id: clientId },
     orderBy: { effective_from: "desc" },
   });
-  const tier = client.pricing_tier_override ?? "silver";
+  const totalUnitsForTier = shipments
+    .flatMap((s) => s.shipment_line_items)
+    .reduce((sum, item) => sum + (item.qty_received ?? 0), 0);
+
+  const tier =
+    client.pricing_tier_override ??
+    (totalUnitsForTier >= 5000 ? "platinum" : totalUnitsForTier >= 2000 ? "gold" : "silver");
+
   let subtotal = 0;
   let totalVat = 0;
-  const lineItems = Object.entries(serviceUnits).map(([service, units], index) => {
-    const custom = prices.find((price) => price.service_code === service);
-    const svc = catalog.find((entry) => entry.code === service);
-    const tierPricing = (svc?.default_tier_pricing ?? {}) as Record<string, number>;
-    const unitRate = Number(custom?.rate ?? tierPricing[tier] ?? 0);
-    const amount = units * unitRate;
-    const vatRate = client.vat_registered && svc?.vat_applicable ? 0.2 : 0;
-    const vatAmount = amount * vatRate;
-    subtotal += amount;
-    totalVat += vatAmount;
-    return {
-      service_code: service,
-      description: svc?.display_name ?? service,
-      qty: units,
-      unit_rate: unitRate,
-      amount,
-      vat_rate: vatRate,
-      vat_amount: vatAmount,
-      sort_order: index + 1,
-    };
-  });
+  const lineItems: {
+    service_code: string;
+    description: string;
+    qty: number;
+    unit_rate: number;
+    amount: number;
+    vat_rate: number;
+    vat_amount: number;
+    sort_order: number;
+    shipment_id: string | null;
+    shipment_line_item_id: string | null;
+  }[] = [];
+
+  let sortIndex = 1;
+
+  for (const shipment of shipments) {
+    for (const item of shipment.shipment_line_items) {
+      const billingUnits = item.qty_received ?? 0;
+      if (billingUnits === 0) continue;
+
+      const selected = item.services_selected as string[] | null;
+      const statuses = item.service_status as Record<string, string> | null;
+      const sku = item.products?.sku ?? "Unknown SKU";
+
+      for (const service of selected ?? []) {
+        if (statuses?.[service] !== "DONE" && statuses?.[service] !== "done") continue;
+
+        const svc = catalog.find((entry) => entry.code === service);
+        const custom = prices.find((price) => price.service_code === service);
+        const tierPricing = (svc?.default_tier_pricing ?? {}) as Record<string, number>;
+        const unitRate = Number(custom?.rate ?? tierPricing[tier] ?? 0);
+        const amount = billingUnits * unitRate;
+        const vatRate = client.vat_registered && svc?.vat_applicable ? 0.2 : 0;
+        const vatAmount = amount * vatRate;
+
+        subtotal += amount;
+        totalVat += vatAmount;
+
+        lineItems.push({
+          service_code: service,
+          description: `${svc?.display_name ?? service} — SKU ${sku} — Shipment ${shipment.reference}`,
+          qty: billingUnits,
+          unit_rate: unitRate,
+          amount,
+          vat_rate: vatRate,
+          vat_amount: vatAmount,
+          sort_order: sortIndex++,
+          shipment_id: shipment.id,
+          shipment_line_item_id: item.id,
+        });
+      }
+    }
+
+    const boxes = await prisma.outbound_boxes.findMany({
+      where: { shipment_id: shipment.id, dispatched_at: { not: null } },
+    });
+
+    for (const box of boxes) {
+      let boxServiceCode: string | null = null;
+      if (box.box_type === "pallet") boxServiceCode = "pallet_forwarding";
+      else if (box.box_type === "box" && box.box_size === "medium") boxServiceCode = "medium_box";
+      else if (box.box_type === "box" && box.box_size === "large") boxServiceCode = "large_box";
+
+      if (!boxServiceCode) continue;
+
+      const svc = catalog.find((entry) => entry.code === boxServiceCode);
+      const custom = prices.find((price) => price.service_code === boxServiceCode);
+      const tierPricing = (svc?.default_tier_pricing ?? {}) as Record<string, number>;
+      const unitRate = Number(custom?.rate ?? tierPricing[tier] ?? tierPricing["rate"] ?? 0);
+      const amount = unitRate;
+      const vatRate = client.vat_registered && svc?.vat_applicable ? 0.2 : 0;
+      const vatAmount = amount * vatRate;
+
+      subtotal += amount;
+      totalVat += vatAmount;
+
+      lineItems.push({
+        service_code: boxServiceCode,
+        description: `${svc?.display_name ?? boxServiceCode} — Shipment ${shipment.reference}`,
+        qty: 1,
+        unit_rate: unitRate,
+        amount,
+        vat_rate: vatRate,
+        vat_amount: vatAmount,
+        sort_order: sortIndex++,
+        shipment_id: shipment.id,
+        shipment_line_item_id: null,
+      });
+    }
+  }
 
   const invoiceNumber = await generateInvoiceNumber(prisma as PrismaClient, periodEnd);
   const dueDate = new Date(periodEnd.getTime() + 14 * 24 * 60 * 60 * 1000);
