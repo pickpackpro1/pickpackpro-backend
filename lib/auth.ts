@@ -11,6 +11,9 @@ export type SessionUser = {
   clientId: string | null;
 };
 
+// In-memory cache — survives for 60 seconds per token
+const userCache = new Map<string, { user: SessionUser; exp: number }>();
+
 function bearer(req: Request) {
   const auth = req.headers.get("authorization");
   if (auth?.toLowerCase().startsWith("bearer ")) return auth.slice(7);
@@ -33,32 +36,47 @@ function bearer(req: Request) {
 
 export async function getSessionUser(req: Request): Promise<SessionUser | null> {
   const forwardedId = req.headers.get("x-user-id");
+
   if (forwardedId) {
+    const cacheKey = `fwd:${forwardedId}`;
+    const cached = userCache.get(cacheKey);
+    if (cached && cached.exp > Date.now()) return cached.user;
+
     const dbUser = await prisma.users.findUnique({ where: { id: forwardedId } });
     if (!dbUser || !dbUser.active) return null;
-    return {
+
+    const sessionUser: SessionUser = {
       userId: dbUser.id,
       authUserId: forwardedId,
       email: dbUser.email,
       role: dbUser.role,
       clientId: dbUser.client_id,
     };
+    userCache.set(cacheKey, { user: sessionUser, exp: Date.now() + 60_000 });
+    return sessionUser;
   }
 
   const token = bearer(req);
   if (!token) return null;
+
+  const cached = userCache.get(token);
+  if (cached && cached.exp > Date.now()) return cached.user;
+
   const { data, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !data.user?.email) return null;
 
   const dbUser = await prisma.users.findUnique({ where: { email: data.user.email } });
   if (!dbUser || !dbUser.active) return null;
-  return {
+
+  const sessionUser: SessionUser = {
     userId: dbUser.id,
     authUserId: data.user.id,
     email: dbUser.email,
     role: dbUser.role,
     clientId: dbUser.client_id,
   };
+  userCache.set(token, { user: sessionUser, exp: Date.now() + 60_000 });
+  return sessionUser;
 }
 
 export async function requireUser(req: Request) {

@@ -46,7 +46,40 @@ export async function GET(req: Request) {
     const [rows, total] = await Promise.all([
       prisma.shipments.findMany({
         where,
-        include: { clients: true, shipment_line_items: { include: { products: true } }, outbound_boxes: true },
+        select: {
+          id: true,
+          reference: true,
+          status: true,
+          expected_arrival_date: true,
+          actual_arrival_date: true,
+          dispatched_date: true,
+          completed_date: true,
+          client_notes: true,
+          assigned_to: true,
+          submitted_at: true,
+          created_at: true,
+          updated_at: true,
+          clients: {
+            select: { id: true, company_name: true, email: true },
+          },
+          shipment_line_items: {
+            select: {
+              id: true,
+              qty_expected: true,
+              qty_received: true,
+              service_status: true,
+              services_selected: true,
+              fnsku: true,
+              qty_discrepancy_flag: true,
+              products: {
+                select: { id: true, sku: true, product_name: true },
+              },
+            },
+          },
+          outbound_boxes: {
+            select: { id: true, box_type: true, box_size: true, dispatched_at: true },
+          },
+        },
         orderBy: { created_at: "desc" },
         skip: (page - 1) * limit,
         take: limit,
@@ -61,9 +94,8 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const user = await requireClientAccess(req, (await req.clone().json()).clientId);
     const body = await json(req, createSchema);
-    await requireClientAccess(req, body.clientId);
+    const user = await requireClientAccess(req, body.clientId);
     const shipment = await prisma.$transaction(async (tx) => {
       const reference = await generateShipmentRef(tx as typeof prisma);
       return tx.shipments.create({

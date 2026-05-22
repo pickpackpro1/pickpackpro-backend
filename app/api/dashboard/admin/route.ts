@@ -57,7 +57,18 @@ export async function GET(req: Request) {
           expected_arrival_date: { gte: arrivalsStart, lte: arrivalsEnd },
           soft_deleted_at: null,
         },
-        include: { clients: true, shipment_line_items: { include: { products: true } } },
+        select: {
+          id: true,
+          reference: true,
+          status: true,
+          expected_arrival_date: true,
+          client_notes: true,
+          assigned_to: true,
+          clients: { select: { id: true, company_name: true } },
+          shipment_line_items: {
+            select: { id: true, qty_expected: true, products: { select: { sku: true, product_name: true } } },
+          },
+        },
         orderBy: { expected_arrival_date: "asc" },
       }),
       prisma.shipments.count({
