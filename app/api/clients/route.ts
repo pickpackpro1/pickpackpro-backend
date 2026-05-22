@@ -75,6 +75,7 @@ export async function POST(req: Request) {
     let inviteError = false;
     try {
       const invite = await supabaseAdmin.auth.admin.inviteUserByEmail(body.contactEmail, {
+        redirectTo: `${process.env.FRONTEND_URL}/set-password`,
         data: { role: "client", clientId: client.id, name: body.contactName ?? body.companyName },
       });
       if (invite.error || !invite.data.user?.id) {
