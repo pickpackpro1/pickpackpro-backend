@@ -6,7 +6,7 @@ const ALLOWED_ORIGIN =
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-User-Id, X-Shipment-Id, Cache-Control, Pragma",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-User-Id, X-Shipment-Id, X-Client-Id, Cache-Control, Pragma",
   "Access-Control-Allow-Credentials": "true",
 };
 
