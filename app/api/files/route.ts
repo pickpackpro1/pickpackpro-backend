@@ -12,6 +12,13 @@ async function clientIdForEntity(entityType: string, entityId: string, fallback?
     const item = await prisma.shipment_line_items.findUnique({ where: { id: entityId }, include: { shipments: true } });
     return item?.shipments.client_id;
   }
+  if (entityType === "box" || entityType === "pallet") {
+    const box = await prisma.outbound_boxes.findUnique({
+      where: { id: entityId },
+      include: { shipments: { select: { client_id: true } } },
+    });
+    return box?.shipments?.client_id;
+  }
   return fallback ?? undefined;
 }
 
