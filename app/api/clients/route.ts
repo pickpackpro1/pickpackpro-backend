@@ -17,6 +17,16 @@ const createSchema = z.object({
   shippingAddress: z.record(z.unknown()).optional().nullable(),
   vatRegistered: z.boolean().default(false),
   vatNumber: z.string().optional().nullable(),
+  sendInvite: z.boolean().optional(),
+  send_invite: z.boolean().optional(),
+  inviteUser: z.boolean().optional(),
+  invite_user: z.boolean().optional(),
+  skipInvite: z.boolean().optional(),
+  skip_invite: z.boolean().optional(),
+  suppressInvite: z.boolean().optional(),
+  suppress_invite: z.boolean().optional(),
+  suppressInviteEmail: z.boolean().optional(),
+  suppress_invite_email: z.boolean().optional(),
 });
 
 export async function GET(req: Request) {
@@ -72,6 +82,21 @@ export async function POST(req: Request) {
         after_value: JSON.parse(JSON.stringify(client)),
       },
     });
+    const shouldSendInvite =
+      !(
+        body.skipInvite ||
+        body.skip_invite ||
+        body.suppressInvite ||
+        body.suppress_invite ||
+        body.suppressInviteEmail ||
+        body.suppress_invite_email ||
+        body.sendInvite === false ||
+        body.send_invite === false ||
+        body.inviteUser === false ||
+        body.invite_user === false
+      );
+    if (!shouldSendInvite) return success(client, 201);
+
     let inviteError = false;
     try {
       const invite = await supabaseAdmin.auth.admin.inviteUserByEmail(body.contactEmail, {

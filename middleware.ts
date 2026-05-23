@@ -21,6 +21,7 @@ export async function middleware(req: NextRequest) {
   if (!req.nextUrl.pathname.startsWith("/api")) return response;
   if (req.nextUrl.pathname === "/api/health") return response;
   if (req.nextUrl.pathname === "/api/auth/login") return response;
+  if (req.nextUrl.pathname === "/api/auth/refresh") return response;
   if (req.nextUrl.pathname === "/api/auth/register") return response;
 
   const auth = req.headers.get("authorization");
