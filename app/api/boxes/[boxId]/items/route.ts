@@ -2,12 +2,70 @@ import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
-import { requireRole } from "@/lib/auth";
+import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { validateBoxAllocation } from "@/lib/businessLogic";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
 const schema = z.object({ shipmentItemId: z.string().uuid(), quantity: z.number().int().positive() });
+
+function isContentRow(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : null;
+}
+
+function quantityValue(value: unknown) {
+  return typeof value === "number" ? value : Number(value ?? 0);
+}
+
+export async function GET(req: Request, { params }: { params: { boxId: string } }) {
+  try {
+    const user = await requireUser(req);
+    const box = await prisma.outbound_boxes.findUnique({
+      where: { id: params.boxId },
+      include: { shipments: { select: { client_id: true } } },
+    });
+    if (!box) throw new ApiError("Box not found", 404);
+    if (user.role === "client") await requireClientAccess(req, box.shipments.client_id);
+
+    const contents = (Array.isArray(box.contents) ? box.contents.filter(isContentRow) : []) as Record<
+      string,
+      unknown
+    >[];
+    const shipmentItemIds = Array.from(
+      new Set(
+        contents
+          .map((item) => stringValue(item.shipmentItemId) ?? stringValue(item.shipment_item_id))
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    const shipmentItems = shipmentItemIds.length
+      ? await prisma.shipment_line_items.findMany({
+          where: { id: { in: shipmentItemIds }, shipment_id: box.shipment_id },
+          include: { products: { select: { sku: true } } },
+        })
+      : [];
+    const skuByShipmentItemId = new Map(shipmentItems.map((item) => [item.id, item.products.sku]));
+
+    const items = contents.map((item, index) => {
+      const shipmentItemId = stringValue(item.shipmentItemId) ?? stringValue(item.shipment_item_id);
+      return {
+        id: stringValue(item.id) ?? String(index),
+        shipmentItemId,
+        shipment_item_id: shipmentItemId,
+        sku: (shipmentItemId ? skuByShipmentItemId.get(shipmentItemId) : null) ?? stringValue(item.sku),
+        quantity: quantityValue(item.quantity),
+      };
+    });
+
+    return success(items);
+  } catch (err) {
+    return handleApiError(err);
+  }
+}
 
 export async function POST(req: Request, { params }: { params: { boxId: string } }) {
   try {
@@ -25,7 +83,7 @@ export async function POST(req: Request, { params }: { params: { boxId: string }
         where: { id: params.boxId },
         data: {
           contents: [
-              ...(contents as Prisma.InputJsonValue[]),
+            ...(contents as Prisma.InputJsonValue[]),
             {
               id: randomUUID(),
               shipmentItemId: body.shipmentItemId,
