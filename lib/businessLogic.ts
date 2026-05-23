@@ -66,9 +66,12 @@ export async function validateBoxAllocation(
     prisma.shipment_line_items.findUnique({ where: { id: shipmentItemId } }),
     prisma.outbound_boxes.findUnique({ where: { id: boxId } }),
   ]);
-  if (!item || item.dispatch_qty === null) return { valid: false, error: "Item not yet received" };
-  if (!box || box.shipment_id !== item.shipment_id) return { valid: false, error: "Box does not belong to item shipment" };
+  if (!item) return { valid: false, error: "Item not found" };
+  if (item.qty_received === null) return { valid: false, error: "Item not yet received" };
+  if (!box) return { valid: false, error: "Box not found" };
+  if (box.shipment_id !== item.shipment_id) return { valid: false, error: "Box does not belong to item shipment" };
 
+  const maxAllocatable = item.qty_received ?? item.qty_expected ?? item.dispatch_qty ?? 0;
   const boxes = await prisma.outbound_boxes.findMany({ where: { shipment_id: item.shipment_id } });
   const allocated = boxes.reduce((sum, current) => {
     const contents = current.contents as Array<{ shipmentItemId?: string; shipment_line_item_id?: string; quantity?: number }> | null;
@@ -79,10 +82,10 @@ export async function validateBoxAllocation(
         .reduce((inner, entry) => inner + (entry.quantity ?? 0), 0)
     );
   }, 0);
-  if (allocated + quantityToAdd > item.dispatch_qty) {
+  if (allocated + quantityToAdd > maxAllocatable) {
     return {
       valid: false,
-      error: `Cannot allocate ${quantityToAdd} units. Max allocatable: ${item.dispatch_qty - allocated} (dispatch qty: ${item.dispatch_qty})`,
+      error: `Cannot allocate ${quantityToAdd} units. Max allocatable: ${maxAllocatable - allocated} (received/boxable quantity: ${maxAllocatable})`,
     };
   }
   return { valid: true };
