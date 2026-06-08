@@ -1,6 +1,7 @@
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
 function parseBoxIds(form: FormData) {
@@ -47,7 +48,7 @@ export async function POST(req: Request) {
 
     const boxes = await prisma.outbound_boxes.findMany({
       where: { id: { in: boxIds } },
-      select: { id: true, shipment_id: true },
+      select: { id: true, shipment_id: true, sub_shipment_id: true },
     });
     if (boxes.length !== boxIds.length) {
       const foundIds = new Set(boxes.map((box) => box.id));
@@ -69,6 +70,7 @@ export async function POST(req: Request) {
     const now = new Date();
     const fileRecords = await prisma.$transaction(async (tx) => {
       const created = [];
+      const subShipmentIds = new Set<string>();
       for (const box of boxes) {
         const record = await tx.uploaded_files.create({
           data: {
@@ -87,7 +89,11 @@ export async function POST(req: Request) {
           where: { id: box.id },
           data: { fba_shipping_label_file_id: record.id, label_uploaded_at: now },
         });
+        if (box.sub_shipment_id) subShipmentIds.add(box.sub_shipment_id);
         created.push(record);
+      }
+      for (const subShipmentId of subShipmentIds) {
+        await refreshSubShipmentStatusFromBoxes(tx, subShipmentId);
       }
       return created;
     });

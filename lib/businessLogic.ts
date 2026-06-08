@@ -41,6 +41,21 @@ export async function validateStatusTransition(
     if (!allDone) return { valid: false, reason: "Not all service tasks are completed" };
   }
   if (newStatus === "dispatched") {
+    const subShipments = await prisma.sub_shipments.findMany({
+      where: { parent_shipment_id: shipment.id, status: { not: "cancelled" } },
+      include: { sub_shipment_items: true },
+    });
+    if (subShipments.length > 0) {
+      const totalReceived = shipment.shipment_line_items.reduce((sum, item) => sum + (item.qty_received ?? 0), 0);
+      const assignedQty = subShipments
+        .flatMap((subShipment) => subShipment.sub_shipment_items)
+        .reduce((sum, item) => sum + item.quantity, 0);
+      if (assignedQty < totalReceived) return { valid: false, reason: "Not all received units are assigned to sub-shipments" };
+      if (subShipments.some((subShipment) => subShipment.status !== "dispatched" && subShipment.status !== "completed")) {
+        return { valid: false, reason: "Not all sub-shipments have been dispatched" };
+      }
+      return { valid: true };
+    }
     const boxes = await prisma.outbound_boxes.findMany({ where: { shipment_id: shipment.id } });
     if (boxes.length === 0) return { valid: false, reason: "No boxes created for this shipment" };
   }
@@ -71,8 +86,36 @@ export async function validateBoxAllocation(
   if (!box) return { valid: false, error: "Box not found" };
   if (box.shipment_id !== item.shipment_id) return { valid: false, error: "Box does not belong to item shipment" };
 
-  const maxAllocatable = item.qty_received ?? item.qty_expected ?? item.dispatch_qty ?? 0;
-  const boxes = await prisma.outbound_boxes.findMany({ where: { shipment_id: item.shipment_id } });
+  let maxAllocatable = item.qty_received ?? item.qty_expected ?? item.dispatch_qty ?? 0;
+  let boxesWhere: Prisma.outbound_boxesWhereInput = { shipment_id: item.shipment_id };
+
+  if (box.sub_shipment_id) {
+    const subShipmentItem = await prisma.sub_shipment_items.findFirst({
+      where: {
+        sub_shipment_id: box.sub_shipment_id,
+        shipment_line_item_id: shipmentItemId,
+        sub_shipments: { status: { not: "cancelled" } },
+      },
+    });
+    if (!subShipmentItem) return { valid: false, error: "Item is not part of this sub-shipment" };
+    maxAllocatable = subShipmentItem.quantity;
+    boxesWhere = { sub_shipment_id: box.sub_shipment_id };
+  } else {
+    const subShipmentItems = await prisma.sub_shipment_items.findMany({
+      where: {
+        shipment_line_item_id: shipmentItemId,
+        sub_shipments: {
+          parent_shipment_id: item.shipment_id,
+          status: { not: "cancelled" },
+        },
+      },
+    });
+    const assignedToSubShipments = subShipmentItems.reduce((sum, subItem) => sum + subItem.quantity, 0);
+    maxAllocatable = Math.max((item.qty_received ?? 0) - assignedToSubShipments, 0);
+    boxesWhere = { shipment_id: item.shipment_id, sub_shipment_id: null };
+  }
+
+  const boxes = await prisma.outbound_boxes.findMany({ where: boxesWhere });
   const allocated = boxes.reduce((sum, current) => {
     const contents = current.contents as Array<{ shipmentItemId?: string; shipment_line_item_id?: string; quantity?: number }> | null;
     return (

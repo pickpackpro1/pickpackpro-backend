@@ -3,6 +3,7 @@ import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const schema = z.object({ trackingCode: z.string().optional().nullable() });
@@ -16,10 +17,16 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
         where: { id: params.boxId },
         data: { dispatched_at: new Date() },
       });
+      if (updatedBox.sub_shipment_id) {
+        await refreshSubShipmentStatusFromBoxes(tx, updatedBox.sub_shipment_id, user.userId);
+      }
       const boxes = await tx.outbound_boxes.findMany({
-        where: { shipment_id: updatedBox.shipment_id },
+        where: { shipment_id: updatedBox.shipment_id, sub_shipment_id: null },
       });
-      if (boxes.every((box) => box.dispatched_at !== null)) {
+      const subShipmentCount = await tx.sub_shipments.count({
+        where: { parent_shipment_id: updatedBox.shipment_id, status: { not: "cancelled" } },
+      });
+      if (!updatedBox.sub_shipment_id && subShipmentCount === 0 && boxes.length > 0 && boxes.every((box) => box.dispatched_at !== null)) {
         const shipment = await tx.shipments.update({
           where: { id: updatedBox.shipment_id },
           data: { status: "dispatched", dispatched_date: new Date(), updated_at: new Date() },

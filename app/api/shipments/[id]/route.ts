@@ -34,6 +34,22 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           },
         },
         outbound_boxes: true,
+        sub_shipments: {
+          orderBy: { sequence_no: "asc" },
+          include: {
+            sub_shipment_items: {
+              include: {
+                shipment_line_items: {
+                  include: { products: true },
+                },
+              },
+            },
+            outbound_boxes: {
+              include: { uploaded_files: true },
+              orderBy: { box_number: "asc" },
+            },
+          },
+        },
         staff_check_ins: true,
       },
     });
@@ -173,6 +189,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
 
     const deletedShipment = await prisma.$transaction(async (tx) => {
       await tx.outbound_boxes.deleteMany({ where: { shipment_id: params.id } });
+      await tx.sub_shipments.deleteMany({ where: { parent_shipment_id: params.id } });
       await tx.shipment_line_items.deleteMany({ where: { shipment_id: params.id } });
       await tx.staff_check_ins.deleteMany({ where: { shipment_id: params.id } });
       if (relatedFileIds.length > 0) {

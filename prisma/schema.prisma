@@ -146,6 +146,7 @@ model notifications {
 model outbound_boxes {
   id                         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shipment_id                String          @db.Uuid
+  sub_shipment_id            String?         @db.Uuid
   box_number                 Int
   box_type                   BoxType
   box_size                   BoxSize?
@@ -159,9 +160,11 @@ model outbound_boxes {
   dispatched_at              DateTime?       @db.Timestamptz(6)
   created_at                 DateTime        @default(now()) @db.Timestamptz(6)
   uploaded_files             uploaded_files? @relation(fields: [fba_shipping_label_file_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "ob_fba_label_file_fkey")
+  sub_shipments              sub_shipments?  @relation(fields: [sub_shipment_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
   shipments                  shipments       @relation(fields: [shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([shipment_id], map: "idx_outbound_boxes_shipment")
+  @@index([sub_shipment_id], map: "idx_outbound_boxes_sub_shipment")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -227,6 +230,7 @@ model shipment_line_items {
   updated_at           DateTime        @default(now()) @db.Timestamptz(6)
   products             products        @relation(fields: [product_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   shipments            shipments       @relation(fields: [shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sub_shipment_items    sub_shipment_items[]
   uploaded_files       uploaded_files? @relation(fields: [fnsku_label_file_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "sli_fnsku_label_file_fkey")
 
   @@index([product_id], map: "idx_line_items_product_id")
@@ -254,6 +258,7 @@ model shipments {
   soft_deleted_at                     DateTime?             @db.Timestamptz(6)
   outbound_boxes                      outbound_boxes[]
   shipment_line_items                 shipment_line_items[]
+  sub_shipments                       sub_shipments[]
   users_shipments_assigned_toTousers  users?                @relation("shipments_assigned_toTousers", fields: [assigned_to], references: [id], onDelete: NoAction, onUpdate: NoAction)
   clients                             clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   users_shipments_received_byTousers  users?                @relation("shipments_received_byTousers", fields: [received_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -278,6 +283,45 @@ model staff_check_ins {
   users            users     @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([shipment_id], map: "idx_staff_check_ins_shipment")
+}
+
+model sub_shipment_items {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sub_shipment_id       String              @db.Uuid
+  shipment_line_item_id String              @db.Uuid
+  quantity              Int
+  created_at            DateTime            @default(now()) @db.Timestamptz(6)
+  shipment_line_items   shipment_line_items @relation(fields: [shipment_line_item_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sub_shipments         sub_shipments       @relation(fields: [sub_shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([sub_shipment_id, shipment_line_item_id], map: "sub_shipment_items_unique_line_per_sub_shipment")
+  @@index([shipment_line_item_id], map: "idx_sub_shipment_items_line_item")
+  @@index([sub_shipment_id], map: "idx_sub_shipment_items_sub")
+}
+
+model sub_shipments {
+  id                                           String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_shipment_id                           String                @db.Uuid
+  sequence_no                                  Int
+  reference                                    String                @unique
+  status                                       SubShipmentStatus     @default(draft)
+  notes                                        String?
+  created_by                                   String?               @db.Uuid
+  dispatched_by                                String?               @db.Uuid
+  created_at                                   DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at                                   DateTime              @default(now()) @db.Timestamptz(6)
+  dispatched_at                                DateTime?             @db.Timestamptz(6)
+  completed_at                                 DateTime?             @db.Timestamptz(6)
+  cancelled_at                                 DateTime?             @db.Timestamptz(6)
+  outbound_boxes                               outbound_boxes[]
+  shipments                                    shipments             @relation(fields: [parent_shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sub_shipment_items                           sub_shipment_items[]
+  users_sub_shipments_created_byTousers        users?                @relation("sub_shipments_created_byTousers", fields: [created_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  users_sub_shipments_dispatched_byTousers     users?                @relation("sub_shipments_dispatched_byTousers", fields: [dispatched_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([parent_shipment_id, sequence_no], map: "sub_shipments_parent_sequence_unique")
+  @@index([parent_shipment_id], map: "idx_sub_shipments_parent")
+  @@index([status], map: "idx_sub_shipments_status")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -317,6 +361,8 @@ model users {
   shipments_shipments_received_byTousers  shipments[]       @relation("shipments_received_byTousers")
   shipments_shipments_submitted_byTousers shipments[]       @relation("shipments_submitted_byTousers")
   staff_check_ins                         staff_check_ins[]
+  sub_shipments_sub_shipments_created_byTousers    sub_shipments[]   @relation("sub_shipments_created_byTousers")
+  sub_shipments_sub_shipments_dispatched_byTousers sub_shipments[]   @relation("sub_shipments_dispatched_byTousers")
   clients                                 clients?          @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_client")
 }
 
@@ -396,6 +442,15 @@ enum ShipmentStatus {
   prepped
   dispatched
   completed
+}
+
+enum SubShipmentStatus {
+  draft
+  awaiting_fba_labels
+  ready_to_dispatch
+  dispatched
+  completed
+  cancelled
 }
 
 enum UnitType {

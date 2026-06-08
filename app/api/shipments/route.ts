@@ -77,7 +77,18 @@ export async function GET(req: Request) {
             },
           },
           outbound_boxes: {
-            select: { id: true, box_type: true, box_size: true, dispatched_at: true },
+            select: { id: true, sub_shipment_id: true, box_type: true, box_size: true, dispatched_at: true },
+          },
+          sub_shipments: {
+            select: {
+              id: true,
+              reference: true,
+              sequence_no: true,
+              status: true,
+              dispatched_at: true,
+              completed_at: true,
+            },
+            orderBy: { sequence_no: "asc" },
           },
         },
         orderBy: { created_at: "desc" },

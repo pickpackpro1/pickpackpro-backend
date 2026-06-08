@@ -3,10 +3,18 @@ import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireUser } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
 async function clientIdForEntity(entityType: string, entityId: string, fallback?: string | null) {
   if (entityType === "shipment") return (await prisma.shipments.findUnique({ where: { id: entityId } }))?.client_id;
+  if (entityType === "sub_shipment" || entityType === "subShipment") {
+    const subShipment = await prisma.sub_shipments.findUnique({
+      where: { id: entityId },
+      include: { shipments: { select: { client_id: true } } },
+    });
+    return subShipment?.shipments.client_id;
+  }
   if (entityType === "invoice") return (await prisma.invoices.findUnique({ where: { id: entityId } }))?.client_id;
   if (entityType === "item" || entityType === "label") {
     const item = await prisma.shipment_line_items.findUnique({ where: { id: entityId }, include: { shipments: true } });
@@ -113,6 +121,9 @@ export async function POST(req: Request) {
         where: { id: entityId },
         include: { shipments: true },
       });
+      if (box?.sub_shipment_id) {
+        await refreshSubShipmentStatusFromBoxes(prisma, box.sub_shipment_id);
+      }
       if (box) {
         const staffToNotify = box.shipments.assigned_to
           ? [box.shipments.assigned_to]
