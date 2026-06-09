@@ -1,4 +1,6 @@
 /** @type {import('next').NextConfig} */
+const frontendUrl = process.env.FRONTEND_URL ?? "https://pick-pack-phi.vercel.app";
+
 const nextConfig = {
   async headers() {
     return [
@@ -7,7 +9,7 @@ const nextConfig = {
         headers: [
           {
             key: "Access-Control-Allow-Origin",
-            value: "https://pick-pack-pro-virid.vercel.app",
+            value: frontendUrl,
           },
           {
             key: "Access-Control-Allow-Methods",

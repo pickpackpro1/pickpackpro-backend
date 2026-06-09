@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const ALLOWED_ORIGIN =
-  process.env.FRONTEND_URL ?? "https://pick-pack-pro-virid.vercel.app";
+  process.env.FRONTEND_URL ?? "https://pick-pack-phi.vercel.app";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
