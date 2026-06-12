@@ -75,6 +75,9 @@ export async function POST(req: Request) {
     const clientId = await clientIdForEntity(entityType, entityId, user.clientId);
     if (!clientId) throw new ApiError("Could not resolve client for file", 400);
     await requireClientAccess(req, clientId);
+    if (entityType === "shipment" && fileType === "fnsku_label") {
+      throw new ApiError("FNSKU labels must be uploaded against a shipment line item", 422);
+    }
     const bucket = bucketFor(fileType);
     const path = `${entityType}/${entityId}/${fileType}/${Date.now()}-${file.name}`;
     const upload = await supabaseAdmin.storage.from(bucket).upload(path, file, { contentType: file.type, upsert: false });
@@ -100,18 +103,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // Link when entityType is 'shipment' (client uploads against the whole shipment)
-    if (entityType === "shipment" && fileType === "fnsku_label") {
-      const lineItems = await prisma.shipment_line_items.findMany({
-        where: { shipment_id: entityId, fnsku_label_file_id: null },
-      });
-      if (lineItems.length > 0) {
-        await prisma.shipment_line_items.updateMany({
-          where: { shipment_id: entityId, fnsku_label_file_id: null },
-          data: { fnsku_label_file_id: record.id, updated_at: new Date() },
-        });
-      }
-    }
     if (entityType === "box" && fileType === "fba_shipping_label") {
       await prisma.outbound_boxes.update({
         where: { id: entityId },

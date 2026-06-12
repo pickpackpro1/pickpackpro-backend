@@ -2,17 +2,26 @@ import { ShipmentStatus } from "@prisma/client";
 import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireUser } from "@/lib/auth";
-import { calculateDispatchQty } from "@/lib/businessLogic";
 import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { generateShipmentRef } from "@/lib/referenceGen";
+import { serializeShipment, shipmentContractInclude } from "@/lib/shipmentContract";
 import { json } from "@/lib/validation";
 
 const itemSchema = z.object({
   sku: z.string().min(1),
   productName: z.string().min(1),
-  expectedQty: z.number().int().positive(),
-  bundleSize: z.number().int().positive().default(1),
+  expectedQty: z.coerce.number().int().positive(),
+  bundleSize: z.coerce.number().int().positive().optional(),
+  bundle_size: z.coerce.number().int().positive().optional(),
+  needsBundling: z.boolean().optional(),
+  needs_bundling: z.boolean().optional(),
+  itemIndex: z.coerce.number().int().nonnegative().optional(),
+  item_index: z.coerce.number().int().nonnegative().optional(),
+  lineItemIndex: z.coerce.number().int().nonnegative().optional(),
+  line_item_index: z.coerce.number().int().nonnegative().optional(),
+  displayOrder: z.coerce.number().int().nonnegative().optional(),
+  display_order: z.coerce.number().int().nonnegative().optional(),
   fnskuLabel: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
   services: z.array(z.string()).default(["FNSKU_LABEL", "POLY_BAG", "BUBBLE_WRAP", "BUNDLING"]),
@@ -25,6 +34,29 @@ const createSchema = z.object({
   isDraft: z.boolean().default(false),
   items: z.array(itemSchema).min(1),
 });
+
+type ShipmentItemInput = z.infer<typeof itemSchema>;
+
+function firstNumber(...values: Array<number | null | undefined>) {
+  return values.find((value) => typeof value === "number" && Number.isFinite(value));
+}
+
+function getBundleSize(item: ShipmentItemInput) {
+  return firstNumber(item.bundleSize, item.bundle_size) ?? 1;
+}
+
+function getNeedsBundling(item: ShipmentItemInput) {
+  const bundleSize = getBundleSize(item);
+  return item.needsBundling ?? item.needs_bundling ?? bundleSize > 1;
+}
+
+function getDisplayOrder(item: ShipmentItemInput, index: number) {
+  return firstNumber(item.displayOrder, item.display_order, item.itemIndex, item.item_index, item.lineItemIndex, item.line_item_index) ?? index;
+}
+
+function buildServiceStatus(services: string[]) {
+  return Object.fromEntries(services.map((service) => [service, "PENDING"]));
+}
 
 export async function GET(req: Request) {
   try {
@@ -46,58 +78,14 @@ export async function GET(req: Request) {
     const [rows, total] = await Promise.all([
       prisma.shipments.findMany({
         where,
-        select: {
-          id: true,
-          reference: true,
-          status: true,
-          expected_arrival_date: true,
-          actual_arrival_date: true,
-          dispatched_date: true,
-          completed_date: true,
-          client_notes: true,
-          assigned_to: true,
-          submitted_at: true,
-          created_at: true,
-          updated_at: true,
-          clients: {
-            select: { id: true, company_name: true, email: true },
-          },
-          shipment_line_items: {
-            select: {
-              id: true,
-              qty_expected: true,
-              qty_received: true,
-              service_status: true,
-              services_selected: true,
-              fnsku: true,
-              qty_discrepancy_flag: true,
-              products: {
-                select: { id: true, sku: true, product_name: true },
-              },
-            },
-          },
-          outbound_boxes: {
-            select: { id: true, sub_shipment_id: true, box_type: true, box_size: true, dispatched_at: true },
-          },
-          sub_shipments: {
-            select: {
-              id: true,
-              reference: true,
-              sequence_no: true,
-              status: true,
-              dispatched_at: true,
-              completed_at: true,
-            },
-            orderBy: { sequence_no: "asc" },
-          },
-        },
+        include: shipmentContractInclude,
         orderBy: { created_at: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
       prisma.shipments.count({ where }),
     ]);
-    return success({ rows, total, page, limit });
+    return success({ rows: rows.map(serializeShipment), total, page, limit });
   } catch (err) {
     return handleApiError(err);
   }
@@ -109,7 +97,7 @@ export async function POST(req: Request) {
     const user = await requireClientAccess(req, body.clientId);
     const shipment = await prisma.$transaction(async (tx) => {
       const reference = await generateShipmentRef(tx as typeof prisma);
-      return tx.shipments.create({
+      const created = await tx.shipments.create({
         data: {
           client_id: body.clientId,
           reference,
@@ -118,37 +106,57 @@ export async function POST(req: Request) {
           client_notes: body.notes ?? null,
           submitted_at: body.isDraft ? null : new Date(),
           submitted_by: body.isDraft ? null : user.userId,
-          shipment_line_items: {
-            create: body.items.map((item) => ({
-              fnsku: item.fnskuLabel ?? item.sku,
-              qty_expected: item.expectedQty,
-              dispatch_qty: null,
-              services_selected: item.services,
-              service_status: Object.fromEntries(item.services.map((service) => [service, "PENDING"])),
-              discrepancy_notes: item.notes ?? null,
-              products: {
-                connectOrCreate: {
-                  where: { client_id_sku: { client_id: body.clientId, sku: item.sku } },
-                  create: {
-                    client_id: body.clientId,
-                    sku: item.sku,
-                    product_name: item.productName,
-                    default_fnsku: item.fnskuLabel ?? null,
-                    length_cm: 0,
-                    width_cm: 0,
-                    height_cm: 0,
-                    weight_kg: 0,
-                    needs_bundling: item.bundleSize > 1,
-                    bundle_size: item.bundleSize,
-                  },
-                },
-              },
-            })),
-          },
         },
-        include: { shipment_line_items: { include: { products: true } } },
+      });
+
+      for (const [index, item] of body.items.entries()) {
+        const bundleSize = getBundleSize(item);
+        const needsBundling = getNeedsBundling(item);
+        const product = await tx.products.upsert({
+          where: { client_id_sku: { client_id: body.clientId, sku: item.sku } },
+          update: {
+            product_name: item.productName,
+            default_fnsku: item.fnskuLabel ?? undefined,
+            needs_bundling: needsBundling,
+            bundle_size: bundleSize,
+          },
+          create: {
+            client_id: body.clientId,
+            sku: item.sku,
+            product_name: item.productName,
+            default_fnsku: item.fnskuLabel ?? null,
+            length_cm: 0,
+            width_cm: 0,
+            height_cm: 0,
+            weight_kg: 0,
+            needs_bundling: needsBundling,
+            bundle_size: bundleSize,
+          },
+        });
+
+        await tx.shipment_line_items.create({
+          data: {
+            shipment_id: created.id,
+            product_id: product.id,
+            fnsku: item.fnskuLabel ?? item.sku,
+            qty_expected: item.expectedQty,
+            dispatch_qty: null,
+            needs_bundling: needsBundling,
+            bundle_size: bundleSize,
+            display_order: getDisplayOrder(item, index),
+            services_selected: item.services,
+            service_status: buildServiceStatus(item.services),
+            discrepancy_notes: item.notes ?? null,
+          },
+        });
+      }
+
+      return tx.shipments.findUniqueOrThrow({
+        where: { id: created.id },
+        include: shipmentContractInclude,
       });
     });
+    const serializedShipment = serializeShipment(shipment);
     await prisma.audit_logs.create({
       data: {
         user_id: user.userId,
@@ -157,7 +165,7 @@ export async function POST(req: Request) {
         action: "shipment.created",
         entity_type: "shipment",
         entity_id: shipment.id,
-        after_value: JSON.parse(JSON.stringify(shipment)),
+        after_value: JSON.parse(JSON.stringify(serializedShipment)),
       },
     });
     const admins = await prisma.users.findMany({ where: { role: "admin", active: true } });
@@ -227,7 +235,7 @@ export async function POST(req: Request) {
     } catch (emailErr) {
       console.error("[email] Failed to send shipment submitted email:", emailErr);
     }
-    return success(shipment, 201);
+    return success(serializedShipment, 201);
   } catch (err) {
     return handleApiError(err);
   }

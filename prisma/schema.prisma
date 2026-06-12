@@ -219,6 +219,9 @@ model shipment_line_items {
   qty_expected         Int
   qty_received         Int?
   dispatch_qty         Int?
+  needs_bundling       Boolean         @default(false)
+  bundle_size          Int?            @default(1)
+  display_order        Int?
   qty_discrepancy_flag Boolean         @default(false)
   discrepancy_notes    String?
   services_selected    Json            @default("[]")

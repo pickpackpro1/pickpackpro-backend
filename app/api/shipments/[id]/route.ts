@@ -2,15 +2,27 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { serializeShipment, shipmentContractInclude } from "@/lib/shipmentContract";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 import { json } from "@/lib/validation";
 
 const itemSchema = z.object({
   sku: z.string().min(1),
   productName: z.string().min(1),
-  expectedQty: z.number().int().positive(),
+  expectedQty: z.coerce.number().int().positive(),
+  bundleSize: z.coerce.number().int().positive().optional(),
+  bundle_size: z.coerce.number().int().positive().optional(),
+  needsBundling: z.boolean().optional(),
+  needs_bundling: z.boolean().optional(),
+  itemIndex: z.coerce.number().int().nonnegative().optional(),
+  item_index: z.coerce.number().int().nonnegative().optional(),
+  lineItemIndex: z.coerce.number().int().nonnegative().optional(),
+  line_item_index: z.coerce.number().int().nonnegative().optional(),
+  displayOrder: z.coerce.number().int().nonnegative().optional(),
+  display_order: z.coerce.number().int().nonnegative().optional(),
   fnskuLabel: z.string().optional().nullable(),
-  services: z.array(z.string()),
+  notes: z.string().optional().nullable(),
+  services: z.array(z.string()).default(["FNSKU_LABEL", "POLY_BAG", "BUBBLE_WRAP", "BUNDLING"]),
 });
 
 const patchSchema = z.object({
@@ -20,43 +32,39 @@ const patchSchema = z.object({
   items: z.array(itemSchema).optional(),
 });
 
+type ShipmentItemInput = z.infer<typeof itemSchema>;
+
+function firstNumber(...values: Array<number | null | undefined>) {
+  return values.find((value) => typeof value === "number" && Number.isFinite(value));
+}
+
+function getBundleSize(item: ShipmentItemInput) {
+  return firstNumber(item.bundleSize, item.bundle_size) ?? 1;
+}
+
+function getNeedsBundling(item: ShipmentItemInput) {
+  const bundleSize = getBundleSize(item);
+  return item.needsBundling ?? item.needs_bundling ?? bundleSize > 1;
+}
+
+function getDisplayOrder(item: ShipmentItemInput, index: number) {
+  return firstNumber(item.displayOrder, item.display_order, item.itemIndex, item.item_index, item.lineItemIndex, item.line_item_index) ?? index;
+}
+
+function buildServiceStatus(services: string[]) {
+  return Object.fromEntries(services.map((service) => [service, "PENDING"]));
+}
+
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
     const user = await requireUser(req);
     const shipment = await prisma.shipments.findUnique({
       where: { id: params.id, soft_deleted_at: null },
-      include: {
-        clients: true,
-        shipment_line_items: {
-          include: {
-            products: true,
-            uploaded_files: true,
-          },
-        },
-        outbound_boxes: true,
-        sub_shipments: {
-          orderBy: { sequence_no: "asc" },
-          include: {
-            sub_shipment_items: {
-              include: {
-                shipment_line_items: {
-                  include: { products: true },
-                },
-              },
-            },
-            outbound_boxes: {
-              include: { uploaded_files: true },
-              orderBy: { box_number: "asc" },
-            },
-          },
-        },
-        staff_check_ins: true,
-      },
+      include: shipmentContractInclude,
     });
     if (!shipment) throw new ApiError("Shipment not found", 404);
     if (user.role === "client") await requireClientAccess(req, shipment.client_id);
-    const discrepancies = shipment.shipment_line_items.filter((item) => item.qty_discrepancy_flag);
-    return success({ ...shipment, discrepancies });
+    return success(serializeShipment(shipment));
   } catch (err) {
     return handleApiError(err);
   }
@@ -88,39 +96,55 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
       if (body.items) {
         await tx.shipment_line_items.deleteMany({ where: { shipment_id: params.id } });
-        for (const item of body.items) {
+        for (const [index, item] of body.items.entries()) {
+          const bundleSize = getBundleSize(item);
+          const needsBundling = getNeedsBundling(item);
+          const product = await tx.products.upsert({
+            where: { client_id_sku: { client_id: shipment.client_id, sku: item.sku } },
+            update: {
+              product_name: item.productName,
+              default_fnsku: item.fnskuLabel ?? undefined,
+              needs_bundling: needsBundling,
+              bundle_size: bundleSize,
+            },
+            create: {
+              client_id: shipment.client_id,
+              sku: item.sku,
+              product_name: item.productName,
+              default_fnsku: item.fnskuLabel ?? null,
+              length_cm: 0,
+              width_cm: 0,
+              height_cm: 0,
+              weight_kg: 0,
+              needs_bundling: needsBundling,
+              bundle_size: bundleSize,
+            },
+          });
+
           await tx.shipment_line_items.create({
             data: {
-              shipments: { connect: { id: params.id } },
+              shipment_id: params.id,
+              product_id: product.id,
               fnsku: item.fnskuLabel ?? item.sku,
               qty_expected: item.expectedQty,
               dispatch_qty: null,
+              needs_bundling: needsBundling,
+              bundle_size: bundleSize,
+              display_order: getDisplayOrder(item, index),
               services_selected: item.services,
-              service_status: Object.fromEntries(item.services.map((service) => [service, "PENDING"])),
-              products: {
-                connectOrCreate: {
-                  where: { client_id_sku: { client_id: shipment.client_id, sku: item.sku } },
-                  create: {
-                    client_id: shipment.client_id,
-                    sku: item.sku,
-                    product_name: item.productName,
-                    default_fnsku: item.fnskuLabel ?? null,
-                    length_cm: 0,
-                    width_cm: 0,
-                    height_cm: 0,
-                    weight_kg: 0,
-                    needs_bundling: false,
-                    bundle_size: 1,
-                  },
-                },
-              },
+              service_status: buildServiceStatus(item.services),
+              discrepancy_notes: item.notes ?? null,
             },
           });
         }
       }
 
-      return shipmentUpdate;
+      return tx.shipments.findUniqueOrThrow({
+        where: { id: shipmentUpdate.id },
+        include: shipmentContractInclude,
+      });
     });
+    const serializedShipment = serializeShipment(updated);
 
     await prisma.audit_logs.create({
       data: {
@@ -131,11 +155,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         entity_type: "shipment",
         entity_id: params.id,
         before_value: { status: shipment.status },
-        after_value: { status: updated.status },
+        after_value: JSON.parse(JSON.stringify(serializedShipment)),
       },
     });
 
-    return success(updated);
+    return success(serializedShipment);
   } catch (err) {
     return handleApiError(err);
   }
