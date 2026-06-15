@@ -2,7 +2,7 @@ import { SubShipmentStatus } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
-import { ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
+import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { refreshParentShipmentDispatchStatus } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -82,10 +82,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       });
 
       if (next.status === "dispatched" || next.status === "completed") {
-        if (next.status === "dispatched") {
-          await ensureSubShipmentDraftInvoice(tx, next.id, user.userId);
-        }
-        await refreshParentShipmentDispatchStatus(tx, next.parent_shipment_id, user.userId);
+        await refreshParentShipmentDispatchStatus(tx, next.parent_shipment_id);
       }
 
       await tx.audit_logs.create({
@@ -103,6 +100,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
       return next;
     });
+
+    if (updated.status === "dispatched" || updated.status === "completed") {
+      await ensureSubShipmentDraftInvoice(prisma, updated.id, user.userId);
+      const parentShipment = await prisma.shipments.findUnique({
+        where: { id: updated.parent_shipment_id },
+        select: { id: true, status: true },
+      });
+      if (parentShipment?.status === "dispatched" || parentShipment?.status === "completed") {
+        await ensureShipmentDraftInvoice(prisma, parentShipment.id, user.userId);
+      }
+    }
 
     return success(updated);
   } catch (err) {

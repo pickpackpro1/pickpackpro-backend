@@ -1,6 +1,5 @@
 import { Prisma, ShipmentStatus, SubShipmentStatus } from "@prisma/client";
 import { ApiError } from "./apiResponse";
-import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "./invoicing";
 
 type Db = Prisma.TransactionClient;
 
@@ -98,7 +97,7 @@ export async function assertSubShipmentItemsAvailable(
   }
 }
 
-export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId: string, dispatchedBy?: string) {
+export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId: string) {
   const shipment = await prisma.shipments.findUnique({
     where: { id: shipmentId },
     include: {
@@ -129,9 +128,6 @@ export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId
         updated_at: new Date(),
       },
     });
-    if (dispatchedBy) {
-      await ensureShipmentDraftInvoice(prisma, shipmentId, dispatchedBy);
-    }
     return updated;
   }
 
@@ -167,11 +163,7 @@ export async function refreshSubShipmentStatusFromBoxes(prisma: Db, subShipmentI
   });
 
   if (updated.status === "dispatched") {
-    const invoiceCreator = dispatchedBy ?? updated.dispatched_by ?? updated.created_by ?? undefined;
-    if (invoiceCreator) {
-      await ensureSubShipmentDraftInvoice(prisma, updated.id, invoiceCreator);
-    }
-    await refreshParentShipmentDispatchStatus(prisma, updated.parent_shipment_id, invoiceCreator);
+    await refreshParentShipmentDispatchStatus(prisma, updated.parent_shipment_id);
   }
 
   return updated;

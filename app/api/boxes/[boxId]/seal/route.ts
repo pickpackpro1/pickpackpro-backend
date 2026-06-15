@@ -2,7 +2,7 @@ import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
-import { ensureShipmentDraftInvoice } from "@/lib/invoicing";
+import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -32,7 +32,6 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
           where: { id: updatedBox.shipment_id },
           data: { status: "dispatched", dispatched_date: new Date(), updated_at: new Date() },
         });
-        await ensureShipmentDraftInvoice(tx, shipment.id, user.userId);
         await tx.audit_logs.create({
           data: {
             user_id: user.userId,
@@ -129,6 +128,32 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
       });
       return updatedBox;
     });
+    if (box.sub_shipment_id) {
+      const subShipment = await prisma.sub_shipments.findUnique({
+        where: { id: box.sub_shipment_id },
+        select: { id: true, parent_shipment_id: true, status: true },
+      });
+      if (subShipment?.status === "dispatched" || subShipment?.status === "completed") {
+        await ensureSubShipmentDraftInvoice(prisma, subShipment.id, user.userId);
+      }
+      if (subShipment) {
+        const parentShipment = await prisma.shipments.findUnique({
+          where: { id: subShipment.parent_shipment_id },
+          select: { id: true, status: true },
+        });
+        if (parentShipment?.status === "dispatched" || parentShipment?.status === "completed") {
+          await ensureShipmentDraftInvoice(prisma, parentShipment.id, user.userId);
+        }
+      }
+    } else {
+      const shipment = await prisma.shipments.findUnique({
+        where: { id: box.shipment_id },
+        select: { id: true, status: true },
+      });
+      if (shipment?.status === "dispatched" || shipment?.status === "completed") {
+        await ensureShipmentDraftInvoice(prisma, shipment.id, user.userId);
+      }
+    }
     return success(box);
   } catch (err) {
     return handleApiError(err);
