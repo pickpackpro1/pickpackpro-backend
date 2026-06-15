@@ -2,6 +2,7 @@ import { SubShipmentStatus } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
+import { ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { refreshParentShipmentDispatchStatus } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -81,7 +82,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       });
 
       if (next.status === "dispatched" || next.status === "completed") {
-        await refreshParentShipmentDispatchStatus(tx, next.parent_shipment_id);
+        if (next.status === "dispatched") {
+          await ensureSubShipmentDraftInvoice(tx, next.id, user.userId);
+        }
+        await refreshParentShipmentDispatchStatus(tx, next.parent_shipment_id, user.userId);
       }
 
       await tx.audit_logs.create({

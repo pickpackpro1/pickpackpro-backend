@@ -1,5 +1,6 @@
 import { Prisma, ShipmentStatus, SubShipmentStatus } from "@prisma/client";
 import { ApiError } from "./apiResponse";
+import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "./invoicing";
 
 type Db = Prisma.TransactionClient;
 
@@ -97,7 +98,7 @@ export async function assertSubShipmentItemsAvailable(
   }
 }
 
-export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId: string) {
+export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId: string, dispatchedBy?: string) {
   const shipment = await prisma.shipments.findUnique({
     where: { id: shipmentId },
     include: {
@@ -120,7 +121,7 @@ export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId
     shipment.sub_shipments.every((subShipment) => subShipment.status === "dispatched" || subShipment.status === "completed");
 
   if (allAssigned && allSubShipmentsDispatched && shipment.status !== "dispatched" && shipment.status !== "completed") {
-    return prisma.shipments.update({
+    const updated = await prisma.shipments.update({
       where: { id: shipmentId },
       data: {
         status: "dispatched" as ShipmentStatus,
@@ -128,6 +129,10 @@ export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId
         updated_at: new Date(),
       },
     });
+    if (dispatchedBy) {
+      await ensureShipmentDraftInvoice(prisma, shipmentId, dispatchedBy);
+    }
+    return updated;
   }
 
   return shipment;
@@ -162,7 +167,11 @@ export async function refreshSubShipmentStatusFromBoxes(prisma: Db, subShipmentI
   });
 
   if (updated.status === "dispatched") {
-    await refreshParentShipmentDispatchStatus(prisma, updated.parent_shipment_id);
+    const invoiceCreator = dispatchedBy ?? updated.dispatched_by ?? updated.created_by ?? undefined;
+    if (invoiceCreator) {
+      await ensureSubShipmentDraftInvoice(prisma, updated.id, invoiceCreator);
+    }
+    await refreshParentShipmentDispatchStatus(prisma, updated.parent_shipment_id, invoiceCreator);
   }
 
   return updated;

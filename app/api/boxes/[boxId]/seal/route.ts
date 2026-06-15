@@ -2,6 +2,7 @@ import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
+import { ensureShipmentDraftInvoice } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -31,6 +32,7 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
           where: { id: updatedBox.shipment_id },
           data: { status: "dispatched", dispatched_date: new Date(), updated_at: new Date() },
         });
+        await ensureShipmentDraftInvoice(tx, shipment.id, user.userId);
         await tx.audit_logs.create({
           data: {
             user_id: user.userId,

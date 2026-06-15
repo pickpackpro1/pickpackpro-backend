@@ -34,6 +34,8 @@ export async function GET(req: Request) {
       },
       select: {
         id: true,
+        shipment_id: true,
+        sub_shipment_id: true,
         invoice_number: true,
         invoice_date: true,
         due_date: true,

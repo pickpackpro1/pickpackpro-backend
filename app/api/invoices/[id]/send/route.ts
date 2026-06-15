@@ -1,14 +1,22 @@
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
+import { finalInvoiceDates } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
     const user = await requireRole(req, ["admin"]);
+    const now = new Date();
+    const { invoiceDate, dueDate } = finalInvoiceDates(now);
     const invoice = await prisma.invoices.update({
       where: { id: params.id },
-      data: { status: "sent", sent_at: new Date() },
+      data: {
+        status: "sent",
+        invoice_date: invoiceDate,
+        due_date: dueDate,
+        sent_at: now,
+      },
     });
     const invoiceWithClient = await prisma.invoices.findUnique({
       where: { id: params.id },

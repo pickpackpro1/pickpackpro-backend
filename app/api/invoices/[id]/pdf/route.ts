@@ -7,7 +7,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const user = await requireUser(req);
     const invoice = await prisma.invoices.findUnique({
       where: { id: params.id },
-      include: { clients: true, invoice_line_items: true },
+      include: {
+        clients: true,
+        invoice_line_items: { orderBy: { sort_order: "asc" } },
+      },
     });
     if (!invoice) throw new ApiError("Invoice not found", 404);
     if (user.role === "client" && invoice.client_id !== user.clientId) {

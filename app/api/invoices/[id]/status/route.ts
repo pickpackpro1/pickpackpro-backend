@@ -2,6 +2,7 @@ import { InvoiceStatus } from "@prisma/client";
 import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
+import { finalInvoiceDates } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
@@ -15,12 +16,16 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       where: { id: params.id },
       select: { status: true },
     });
+    const now = new Date();
+    const finalDates = body.status === "sent" ? finalInvoiceDates(now) : null;
     const invoice = await prisma.invoices.update({
       where: { id: params.id },
       data: {
         status: body.status,
-        sent_at: body.status === "sent" ? new Date() : undefined,
-        paid_at: body.status === "paid" ? new Date() : undefined,
+        invoice_date: finalDates?.invoiceDate,
+        due_date: finalDates?.dueDate,
+        sent_at: body.status === "sent" ? now : undefined,
+        paid_at: body.status === "paid" ? now : undefined,
       },
     });
     await prisma.audit_logs.create({

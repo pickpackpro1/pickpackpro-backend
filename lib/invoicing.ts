@@ -1,0 +1,506 @@
+import { InvoiceStatus, Prisma, PrismaClient } from "@prisma/client";
+import { ApiError } from "./apiResponse";
+import { normalizeServiceCode } from "./businessLogic";
+import { generateInvoiceNumber } from "./referenceGen";
+
+type Db = PrismaClient | Prisma.TransactionClient;
+
+type BillableLineItem = {
+  id: string;
+  quantity: number;
+  services_selected: Prisma.JsonValue;
+  service_status: Prisma.JsonValue;
+  products: {
+    sku: string;
+  };
+};
+
+type BoxForInvoice = {
+  id: string;
+  box_type: string;
+  box_size: string | null;
+  dispatched_at: Date | null;
+};
+
+type PricingTierName = "silver" | "gold" | "platinum";
+
+type ServiceCatalogEntry = {
+  code: string;
+  display_name: string;
+  default_tier_pricing: Prisma.JsonValue;
+  vat_applicable: boolean;
+};
+
+type ClientPriceEntry = {
+  service_code: string;
+  tier: string | null;
+  rate: Prisma.Decimal | number | string;
+};
+
+type InvoiceLineCreate = Prisma.invoice_line_itemsCreateWithoutInvoicesInput;
+
+const invoiceInclude = {
+  clients: true,
+  invoice_line_items: { orderBy: { sort_order: "asc" } },
+} satisfies Prisma.invoicesInclude;
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+export function finalInvoiceDates(now = new Date()) {
+  return {
+    invoiceDate: now,
+    dueDate: addDays(now, 14),
+  };
+}
+
+function isDoneStatus(status: unknown) {
+  return String(status || "").toLowerCase() === "done";
+}
+
+function getServiceStatus(statuses: Record<string, unknown> | null, rawServiceCode: string, normalizedServiceCode: string) {
+  if (!statuses) return undefined;
+  return statuses[rawServiceCode] ?? statuses[normalizedServiceCode] ?? statuses[rawServiceCode.toUpperCase()];
+}
+
+function getTierRate(pricing: Prisma.JsonValue | undefined, tier: string) {
+  if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) return 0;
+  const tierPricing = pricing as Record<string, unknown>;
+  return Number(tierPricing[tier] ?? tierPricing.rate ?? 0);
+}
+
+function getPricingTier(client: { pricing_tier_override: PricingTierName | string | null }, totalUnits: number): PricingTierName {
+  if (client.pricing_tier_override === "silver" || client.pricing_tier_override === "gold" || client.pricing_tier_override === "platinum") {
+    return client.pricing_tier_override;
+  }
+  return totalUnits >= 5000 ? "platinum" : totalUnits >= 2000 ? "gold" : "silver";
+}
+
+function lineAmounts(qty: number, unitRate: number, vatRate: number) {
+  const amount = qty * unitRate;
+  const vatAmount = amount * vatRate;
+  return { amount, vatAmount };
+}
+
+export async function recalculateInvoiceTotals(prisma: Db, invoiceId: string) {
+  const lines = await prisma.invoice_line_items.findMany({ where: { invoice_id: invoiceId } });
+  const subtotal = lines.reduce((sum, line) => sum + Number(line.amount), 0);
+  const vatAmount = lines.reduce((sum, line) => sum + Number(line.vat_amount), 0);
+  return prisma.invoices.update({
+    where: { id: invoiceId },
+    data: {
+      subtotal,
+      vat_amount: vatAmount,
+      total: subtotal + vatAmount,
+    },
+    include: invoiceInclude,
+  });
+}
+
+function nextSortOrder(lines: { sort_order: number }[]) {
+  return lines.reduce((max, line) => Math.max(max, line.sort_order), 0) + 1;
+}
+
+export async function assertDraftInvoice(prisma: Db, invoiceId: string) {
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: { clients: true, invoice_line_items: true },
+  });
+  if (!invoice) throw new ApiError("Invoice not found", 404);
+  if (invoice.status !== "draft") throw new ApiError("Only draft invoices can be edited", 422);
+  return invoice;
+}
+
+export async function addManualInvoiceLine(
+  prisma: Db,
+  invoiceId: string,
+  input: {
+    description: string;
+    qty: number;
+    unitRate: number;
+    serviceCode?: string | null;
+    vatRate?: number | null;
+  },
+) {
+  const invoice = await assertDraftInvoice(prisma, invoiceId);
+  const vatRate = input.vatRate ?? (invoice.clients.vat_registered ? 0.2 : 0);
+  const { amount, vatAmount } = lineAmounts(input.qty, input.unitRate, vatRate);
+  await prisma.invoice_line_items.create({
+    data: {
+      invoice_id: invoice.id,
+      shipment_id: invoice.shipment_id,
+      sub_shipment_id: invoice.sub_shipment_id,
+      shipment_line_item_id: null,
+      service_code: normalizeServiceCode(input.serviceCode || input.description),
+      description: input.description,
+      qty: input.qty,
+      unit_rate: input.unitRate,
+      amount,
+      vat_rate: vatRate,
+      vat_amount: vatAmount,
+      line_source: "manual",
+      sort_order: nextSortOrder(invoice.invoice_line_items),
+    },
+  });
+  return recalculateInvoiceTotals(prisma, invoice.id);
+}
+
+export async function updateManualInvoiceLine(
+  prisma: Db,
+  invoiceId: string,
+  lineItemId: string,
+  input: {
+    description?: string;
+    qty?: number;
+    unitRate?: number;
+    serviceCode?: string | null;
+    vatRate?: number | null;
+  },
+) {
+  const invoice = await assertDraftInvoice(prisma, invoiceId);
+  const line = await prisma.invoice_line_items.findUnique({ where: { id: lineItemId } });
+  if (!line || line.invoice_id !== invoiceId) throw new ApiError("Invoice line item not found", 404);
+  if (line.line_source !== "manual") throw new ApiError("System invoice lines cannot be edited", 422);
+
+  const qty = input.qty ?? Number(line.qty);
+  const unitRate = input.unitRate ?? Number(line.unit_rate);
+  const vatRate = input.vatRate ?? Number(line.vat_rate);
+  const { amount, vatAmount } = lineAmounts(qty, unitRate, vatRate);
+
+  await prisma.invoice_line_items.update({
+    where: { id: lineItemId },
+    data: {
+      description: input.description ?? line.description,
+      service_code: input.serviceCode === undefined ? line.service_code : normalizeServiceCode(input.serviceCode || input.description || line.description),
+      qty,
+      unit_rate: unitRate,
+      amount,
+      vat_rate: vatRate,
+      vat_amount: vatAmount,
+    },
+  });
+  return recalculateInvoiceTotals(prisma, invoice.id);
+}
+
+export async function deleteManualInvoiceLine(prisma: Db, invoiceId: string, lineItemId: string) {
+  const invoice = await assertDraftInvoice(prisma, invoiceId);
+  const line = await prisma.invoice_line_items.findUnique({ where: { id: lineItemId } });
+  if (!line || line.invoice_id !== invoiceId) throw new ApiError("Invoice line item not found", 404);
+  if (line.line_source !== "manual") throw new ApiError("System invoice lines cannot be deleted", 422);
+  await prisma.invoice_line_items.delete({ where: { id: lineItemId } });
+  return recalculateInvoiceTotals(prisma, invoice.id);
+}
+
+function contentsQuantityByLineItem(boxes: Array<{ contents: Prisma.JsonValue }>) {
+  const quantities = new Map<string, number>();
+  for (const box of boxes) {
+    const contents = Array.isArray(box.contents) ? box.contents : [];
+    for (const entry of contents) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const itemId = String(entry.shipmentItemId || entry.shipment_line_item_id || "");
+      const quantity = Number(entry.quantity || 0);
+      if (!itemId || quantity <= 0) continue;
+      quantities.set(itemId, (quantities.get(itemId) ?? 0) + quantity);
+    }
+  }
+  return quantities;
+}
+
+function boxServiceCode(box: BoxForInvoice) {
+  if (box.box_type === "pallet") return "pallet_forwarding";
+  if (box.box_type === "box" && box.box_size === "medium") return "medium_box";
+  if (box.box_type === "box" && box.box_size === "large") return "large_box";
+  return null;
+}
+
+async function pricingContext(
+  prisma: Db,
+  clientId: string,
+  client: { pricing_tier_override: PricingTierName | string | null },
+  totalUnits: number,
+) {
+  const [catalog, prices] = await Promise.all([
+    prisma.service_catalog.findMany(),
+    prisma.client_price_lists.findMany({
+      where: { client_id: clientId },
+      orderBy: { effective_from: "desc" },
+    }),
+  ]);
+  return {
+    tier: getPricingTier(client, totalUnits),
+    catalogByCode: new Map(catalog.map((entry) => [normalizeServiceCode(entry.code), entry])),
+    prices,
+  };
+}
+
+function buildServiceLines(input: {
+  items: BillableLineItem[];
+  shipmentId: string;
+  subShipmentId: string | null;
+  shipmentReference: string;
+  clientVatRegistered: boolean;
+  tier: string;
+  catalogByCode: Map<string, ServiceCatalogEntry>;
+  prices: ClientPriceEntry[];
+  startSortOrder: number;
+}) {
+  const lines: InvoiceLineCreate[] = [];
+  let sortOrder = input.startSortOrder;
+
+  for (const item of input.items) {
+    if (item.quantity <= 0) continue;
+    const selected = Array.isArray(item.services_selected) ? item.services_selected.map(String) : [];
+    const statuses = item.service_status && typeof item.service_status === "object" && !Array.isArray(item.service_status)
+      ? (item.service_status as Record<string, unknown>)
+      : null;
+
+    for (const service of selected) {
+      const serviceCode = normalizeServiceCode(service);
+      if (!isDoneStatus(getServiceStatus(statuses, service, serviceCode))) continue;
+
+      const svc = input.catalogByCode.get(serviceCode);
+      const billingServiceCode = svc?.code ?? serviceCode;
+      const custom = input.prices.find((price) => normalizeServiceCode(price.service_code) === serviceCode && (!price.tier || price.tier === input.tier));
+      const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, input.tier));
+      const vatRate = input.clientVatRegistered && svc?.vat_applicable ? 0.2 : 0;
+      const { amount, vatAmount } = lineAmounts(item.quantity, unitRate, vatRate);
+
+      lines.push({
+        shipment_id: input.shipmentId,
+        sub_shipment_id: input.subShipmentId,
+        shipment_line_item_id: item.id,
+        service_code: billingServiceCode,
+        description: `${svc?.display_name ?? service} - SKU ${item.products.sku} - Shipment ${input.shipmentReference}`,
+        qty: item.quantity,
+        unit_rate: unitRate,
+        amount,
+        vat_rate: vatRate,
+        vat_amount: vatAmount,
+        line_source: "system",
+        sort_order: sortOrder++,
+      });
+    }
+  }
+
+  return lines;
+}
+
+function buildBoxLines(input: {
+  boxes: BoxForInvoice[];
+  shipmentId: string;
+  subShipmentId: string | null;
+  shipmentReference: string;
+  clientVatRegistered: boolean;
+  tier: string;
+  catalogByCode: Map<string, ServiceCatalogEntry>;
+  prices: ClientPriceEntry[];
+  startSortOrder: number;
+}) {
+  const lines: InvoiceLineCreate[] = [];
+  let sortOrder = input.startSortOrder;
+
+  for (const box of input.boxes) {
+    if (!box.dispatched_at) continue;
+    const serviceCode = boxServiceCode(box);
+    if (!serviceCode) continue;
+
+    const normalizedServiceCode = normalizeServiceCode(serviceCode);
+    const svc = input.catalogByCode.get(normalizedServiceCode);
+    const billingServiceCode = svc?.code ?? normalizedServiceCode;
+    const custom = input.prices.find((price) => normalizeServiceCode(price.service_code) === normalizedServiceCode && (!price.tier || price.tier === input.tier));
+    const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, input.tier));
+    const vatRate = input.clientVatRegistered && svc?.vat_applicable ? 0.2 : 0;
+    const { amount, vatAmount } = lineAmounts(1, unitRate, vatRate);
+
+    lines.push({
+      shipment_id: input.shipmentId,
+      sub_shipment_id: input.subShipmentId,
+      shipment_line_item_id: null,
+      service_code: billingServiceCode,
+      description: `${svc?.display_name ?? billingServiceCode} - Shipment ${input.shipmentReference}`,
+      qty: 1,
+      unit_rate: unitRate,
+      amount,
+      vat_rate: vatRate,
+      vat_amount: vatAmount,
+      line_source: "system",
+      sort_order: sortOrder++,
+    });
+  }
+
+  return lines;
+}
+
+function totalsFor(lines: InvoiceLineCreate[]) {
+  const subtotal = lines.reduce((sum, line) => sum + Number(line.amount), 0);
+  const vatAmount = lines.reduce((sum, line) => sum + Number(line.vat_amount), 0);
+  return { subtotal, vatAmount, total: subtotal + vatAmount };
+}
+
+async function existingDispatchInvoice(
+  prisma: Db,
+  where: { shipmentId?: string; subShipmentId?: string },
+) {
+  return prisma.invoices.findFirst({
+    where: {
+      shipment_id: where.shipmentId,
+      sub_shipment_id: where.subShipmentId ?? null,
+      invoice_type: where.subShipmentId ? "sub_shipment" : "shipment",
+      status: { not: "cancelled" as InvoiceStatus },
+    },
+    include: invoiceInclude,
+  });
+}
+
+export async function ensureShipmentDraftInvoice(prisma: Db, shipmentId: string, createdBy: string) {
+  const existing = await existingDispatchInvoice(prisma, { shipmentId });
+  if (existing) return existing;
+
+  const shipment = await prisma.shipments.findUnique({
+    where: { id: shipmentId, soft_deleted_at: null },
+    include: {
+      clients: true,
+      shipment_line_items: { include: { products: true } },
+      outbound_boxes: {
+        where: { sub_shipment_id: null, dispatched_at: { not: null } },
+      },
+    },
+  });
+  if (!shipment) throw new ApiError("Shipment not found", 404);
+  if (shipment.status !== "dispatched" && shipment.status !== "completed") {
+    throw new ApiError("Shipment invoice can only be generated after dispatch", 422);
+  }
+
+  const quantityByLineItem = contentsQuantityByLineItem(shipment.outbound_boxes);
+  const billableItems = shipment.shipment_line_items
+    .map((item) => ({
+      id: item.id,
+      quantity: quantityByLineItem.get(item.id) ?? 0,
+      services_selected: item.services_selected,
+      service_status: item.service_status,
+      products: { sku: item.products.sku },
+    }))
+    .filter((item) => item.quantity > 0);
+
+  const totalUnits = billableItems.reduce((sum, item) => sum + item.quantity, 0);
+  const pricing = await pricingContext(prisma, shipment.client_id, shipment.clients, totalUnits);
+  const serviceLines = buildServiceLines({
+    items: billableItems,
+    shipmentId: shipment.id,
+    subShipmentId: null,
+    shipmentReference: shipment.reference,
+    clientVatRegistered: shipment.clients.vat_registered,
+    ...pricing,
+    startSortOrder: 1,
+  });
+  const boxLines = buildBoxLines({
+    boxes: shipment.outbound_boxes,
+    shipmentId: shipment.id,
+    subShipmentId: null,
+    shipmentReference: shipment.reference,
+    clientVatRegistered: shipment.clients.vat_registered,
+    ...pricing,
+    startSortOrder: serviceLines.length + 1,
+  });
+  const lines = [...serviceLines, ...boxLines];
+  const totals = totalsFor(lines);
+  const now = new Date();
+
+  return prisma.invoices.create({
+    data: {
+      client_id: shipment.client_id,
+      shipment_id: shipment.id,
+      sub_shipment_id: null,
+      invoice_number: await generateInvoiceNumber(prisma as PrismaClient, now),
+      invoice_date: now,
+      due_date: addDays(now, 14),
+      invoice_type: "shipment",
+      subtotal: totals.subtotal,
+      vat_amount: totals.vatAmount,
+      total: totals.total,
+      created_by: createdBy,
+      invoice_line_items: lines.length ? { create: lines } : undefined,
+    },
+    include: invoiceInclude,
+  });
+}
+
+export async function ensureSubShipmentDraftInvoice(prisma: Db, subShipmentId: string, createdBy: string) {
+  const existing = await existingDispatchInvoice(prisma, { subShipmentId });
+  if (existing) return existing;
+
+  const subShipment = await prisma.sub_shipments.findUnique({
+    where: { id: subShipmentId },
+    include: {
+      shipments: {
+        include: { clients: true },
+      },
+      sub_shipment_items: {
+        include: {
+          shipment_line_items: {
+            include: { products: true },
+          },
+        },
+      },
+      outbound_boxes: {
+        where: { dispatched_at: { not: null } },
+      },
+    },
+  });
+  if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
+  if (subShipment.status !== "dispatched" && subShipment.status !== "completed") {
+    throw new ApiError("Sub-shipment invoice can only be generated after dispatch", 422);
+  }
+
+  const billableItems = subShipment.sub_shipment_items.map((item) => ({
+    id: item.shipment_line_item_id,
+    quantity: item.quantity,
+    services_selected: item.shipment_line_items.services_selected,
+    service_status: item.shipment_line_items.service_status,
+    products: { sku: item.shipment_line_items.products.sku },
+  }));
+  const totalUnits = billableItems.reduce((sum, item) => sum + item.quantity, 0);
+  const pricing = await pricingContext(prisma, subShipment.shipments.client_id, subShipment.shipments.clients, totalUnits);
+  const serviceLines = buildServiceLines({
+    items: billableItems,
+    shipmentId: subShipment.parent_shipment_id,
+    subShipmentId: subShipment.id,
+    shipmentReference: subShipment.reference,
+    clientVatRegistered: subShipment.shipments.clients.vat_registered,
+    ...pricing,
+    startSortOrder: 1,
+  });
+  const boxLines = buildBoxLines({
+    boxes: subShipment.outbound_boxes,
+    shipmentId: subShipment.parent_shipment_id,
+    subShipmentId: subShipment.id,
+    shipmentReference: subShipment.reference,
+    clientVatRegistered: subShipment.shipments.clients.vat_registered,
+    ...pricing,
+    startSortOrder: serviceLines.length + 1,
+  });
+  const lines = [...serviceLines, ...boxLines];
+  const totals = totalsFor(lines);
+  const now = new Date();
+
+  return prisma.invoices.create({
+    data: {
+      client_id: subShipment.shipments.client_id,
+      shipment_id: subShipment.parent_shipment_id,
+      sub_shipment_id: subShipment.id,
+      invoice_number: await generateInvoiceNumber(prisma as PrismaClient, now),
+      invoice_date: now,
+      due_date: addDays(now, 14),
+      invoice_type: "sub_shipment",
+      subtotal: totals.subtotal,
+      vat_amount: totals.vatAmount,
+      total: totals.total,
+      created_by: createdBy,
+      invoice_line_items: lines.length ? { create: lines } : undefined,
+    },
+    include: invoiceInclude,
+  });
+}

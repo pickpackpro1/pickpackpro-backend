@@ -4,6 +4,7 @@ import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { assertTransition } from "@/lib/businessLogic";
 import { sendEmail } from "@/lib/email";
+import { ensureShipmentDraftInvoice } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
@@ -29,6 +30,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       },
     });
     if (body.status === "dispatched") {
+      await ensureShipmentDraftInvoice(prisma, updated.id, user.userId);
       const clientUser = await prisma.users.findFirst({
         where: { client_id: shipment.client_id, role: "client" },
       });
