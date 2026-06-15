@@ -104,13 +104,15 @@ function nextSortOrder(lines: { sort_order: number }[]) {
   return lines.reduce((max, line) => Math.max(max, line.sort_order), 0) + 1;
 }
 
-export async function assertDraftInvoice(prisma: Db, invoiceId: string) {
+export async function assertEditableInvoice(prisma: Db, invoiceId: string) {
   const invoice = await prisma.invoices.findUnique({
     where: { id: invoiceId },
     include: { clients: true, invoice_line_items: true },
   });
   if (!invoice) throw new ApiError("Invoice not found", 404);
-  if (invoice.status !== "draft") throw new ApiError("Only draft invoices can be edited", 422);
+  if (invoice.status !== "draft" && invoice.status !== "sent") {
+    throw new ApiError("Only draft or sent invoices can be edited", 422);
+  }
   return invoice;
 }
 
@@ -125,7 +127,7 @@ export async function addManualInvoiceLine(
     vatRate?: number | null;
   },
 ) {
-  const invoice = await assertDraftInvoice(prisma, invoiceId);
+  const invoice = await assertEditableInvoice(prisma, invoiceId);
   const vatRate = input.vatRate ?? (invoice.clients.vat_registered ? 0.2 : 0);
   const { amount, vatAmount } = lineAmounts(input.qty, input.unitRate, vatRate);
   await prisma.invoice_line_items.create({
@@ -160,7 +162,7 @@ export async function updateManualInvoiceLine(
     vatRate?: number | null;
   },
 ) {
-  const invoice = await assertDraftInvoice(prisma, invoiceId);
+  const invoice = await assertEditableInvoice(prisma, invoiceId);
   const line = await prisma.invoice_line_items.findUnique({ where: { id: lineItemId } });
   if (!line || line.invoice_id !== invoiceId) throw new ApiError("Invoice line item not found", 404);
   if (line.line_source !== "manual") throw new ApiError("System invoice lines cannot be edited", 422);
@@ -186,7 +188,7 @@ export async function updateManualInvoiceLine(
 }
 
 export async function deleteManualInvoiceLine(prisma: Db, invoiceId: string, lineItemId: string) {
-  const invoice = await assertDraftInvoice(prisma, invoiceId);
+  const invoice = await assertEditableInvoice(prisma, invoiceId);
   const line = await prisma.invoice_line_items.findUnique({ where: { id: lineItemId } });
   if (!line || line.invoice_id !== invoiceId) throw new ApiError("Invoice line item not found", 404);
   if (line.line_source !== "manual") throw new ApiError("System invoice lines cannot be deleted", 422);
