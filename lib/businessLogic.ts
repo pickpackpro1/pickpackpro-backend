@@ -10,6 +10,67 @@ export function getBillingUnits(item: { qty_received: number | null }) {
   return item.qty_received ?? 0;
 }
 
+const serviceCodeAliases: Record<string, string> = {
+  FNSKU_LABEL: "fnsku_label",
+  fnsku_label: "fnsku_label",
+  POLY_BAG: "polybag",
+  poly_bag: "polybag",
+  polybag: "polybag",
+  BUBBLE_WRAP: "bubble_wrap",
+  bubble_wrap: "bubble_wrap",
+  BUNDLING: "bundling",
+  bundling: "bundling",
+  LEAFLET_INSERTION: "leaflet_insertion",
+  MARKETING_LEAFLET_INSERTION: "leaflet_insertion",
+  leaflet_insertion: "leaflet_insertion",
+  OVERSIZE_SURCHARGE: "oversize_surcharge",
+  OVERSIZED_ITEMS: "oversize_surcharge",
+  oversize_surcharge: "oversize_surcharge",
+  oversized_items: "oversize_surcharge",
+  RETURN_PROCESSING: "return_processing",
+  return_processing: "return_processing",
+  PALLET_STORAGE: "pallet_storage",
+  PALLET_STORAGE_WEEKLY: "pallet_storage",
+  pallet_storage: "pallet_storage",
+  pallet_storage_weekly: "pallet_storage",
+  MEDIUM_BOX: "medium_box",
+  medium_box: "medium_box",
+  LARGE_BOX: "large_box",
+  large_box: "large_box",
+  PALLET_FORWARDING: "pallet_forwarding",
+  pallet_forwarding: "pallet_forwarding",
+  ONLY_BOX_FORWARDING: "box_forwarding",
+  BOX_FORWARDING: "box_forwarding",
+  only_box_forwarding: "box_forwarding",
+  box_forwarding: "box_forwarding",
+};
+
+export function normalizeServiceCode(serviceCode: string) {
+  const trimmed = String(serviceCode || "").trim();
+  if (!trimmed) return "";
+  const compact = trimmed
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return serviceCodeAliases[trimmed] ?? serviceCodeAliases[trimmed.toUpperCase()] ?? serviceCodeAliases[compact] ?? compact;
+}
+
+function isDoneStatus(status: unknown) {
+  return String(status || "").toLowerCase() === "done";
+}
+
+function getServiceStatus(statuses: Record<string, unknown> | null, rawServiceCode: string, normalizedServiceCode: string) {
+  if (!statuses) return undefined;
+  return statuses[rawServiceCode] ?? statuses[normalizedServiceCode] ?? statuses[rawServiceCode.toUpperCase()];
+}
+
+function getTierRate(pricing: Prisma.JsonValue | undefined, tier: string) {
+  if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) return 0;
+  const tierPricing = pricing as Record<string, unknown>;
+  return Number(tierPricing[tier] ?? tierPricing.rate ?? 0);
+}
+
 const validTransitions: Record<ShipmentStatus, ShipmentStatus[]> = {
   draft: ["submitted", "pending_arrival"],
   submitted: ["pending_arrival", "received"],
@@ -158,6 +219,8 @@ export async function generateInvoice(
     where: { client_id: clientId },
     orderBy: { effective_from: "desc" },
   });
+  const catalogByCode = new Map(catalog.map((entry) => [normalizeServiceCode(entry.code), entry]));
+
   const totalUnitsForTier = shipments
     .flatMap((s) => s.shipment_line_items)
     .reduce((sum, item) => sum + (item.qty_received ?? 0), 0);
@@ -189,16 +252,20 @@ export async function generateInvoice(
       if (billingUnits === 0) continue;
 
       const selected = item.services_selected as string[] | null;
-      const statuses = item.service_status as Record<string, string> | null;
+      const statuses = item.service_status as Record<string, unknown> | null;
       const sku = item.products?.sku ?? "Unknown SKU";
 
       for (const service of selected ?? []) {
-        if (statuses?.[service] !== "DONE" && statuses?.[service] !== "done") continue;
+        const serviceCode = normalizeServiceCode(service);
+        if (!isDoneStatus(getServiceStatus(statuses, service, serviceCode))) continue;
 
-        const svc = catalog.find((entry) => entry.code === service);
-        const custom = prices.find((price) => price.service_code === service);
-        const tierPricing = (svc?.default_tier_pricing ?? {}) as Record<string, number>;
-        const unitRate = Number(custom?.rate ?? tierPricing[tier] ?? 0);
+        const svc = catalogByCode.get(serviceCode);
+        const billingServiceCode = svc?.code ?? serviceCode;
+        const custom = prices.find((price) => {
+          const priceServiceCode = normalizeServiceCode(price.service_code);
+          return priceServiceCode === serviceCode && (!price.tier || price.tier === tier);
+        });
+        const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, tier));
         const amount = billingUnits * unitRate;
         const vatRate = client.vat_registered && svc?.vat_applicable ? 0.2 : 0;
         const vatAmount = amount * vatRate;
@@ -207,7 +274,7 @@ export async function generateInvoice(
         totalVat += vatAmount;
 
         lineItems.push({
-          service_code: service,
+          service_code: billingServiceCode,
           description: `${svc?.display_name ?? service} — SKU ${sku} — Shipment ${shipment.reference}`,
           qty: billingUnits,
           unit_rate: unitRate,
@@ -233,10 +300,14 @@ export async function generateInvoice(
 
       if (!boxServiceCode) continue;
 
-      const svc = catalog.find((entry) => entry.code === boxServiceCode);
-      const custom = prices.find((price) => price.service_code === boxServiceCode);
-      const tierPricing = (svc?.default_tier_pricing ?? {}) as Record<string, number>;
-      const unitRate = Number(custom?.rate ?? tierPricing[tier] ?? tierPricing["rate"] ?? 0);
+      const serviceCode = normalizeServiceCode(boxServiceCode);
+      const svc = catalogByCode.get(serviceCode);
+      const billingServiceCode = svc?.code ?? serviceCode;
+      const custom = prices.find((price) => {
+        const priceServiceCode = normalizeServiceCode(price.service_code);
+        return priceServiceCode === serviceCode && (!price.tier || price.tier === tier);
+      });
+      const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, tier));
       const amount = unitRate;
       const vatRate = client.vat_registered && svc?.vat_applicable ? 0.2 : 0;
       const vatAmount = amount * vatRate;
@@ -245,8 +316,8 @@ export async function generateInvoice(
       totalVat += vatAmount;
 
       lineItems.push({
-        service_code: boxServiceCode,
-        description: `${svc?.display_name ?? boxServiceCode} — Shipment ${shipment.reference}`,
+        service_code: billingServiceCode,
+        description: `${svc?.display_name ?? billingServiceCode} — Shipment ${shipment.reference}`,
         qty: 1,
         unit_rate: unitRate,
         amount,
