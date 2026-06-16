@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { validateBoxAllocation } from "@/lib/businessLogic";
+import { assertBoxCanBeModified } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
@@ -72,9 +73,7 @@ export async function POST(req: Request, { params }: { params: { boxId: string }
     await requireRole(req, ["admin", "staff"]);
     const body = await json(req, schema);
     const updated = await prisma.$transaction(async (tx) => {
-      const box = await tx.outbound_boxes.findUnique({ where: { id: params.boxId } });
-      if (!box) throw new ApiError("Box not found", 404);
-      if (box.dispatched_at) throw new ApiError("Sealed boxes cannot be modified", 422);
+      const box = await assertBoxCanBeModified(tx, params.boxId);
       const validation = await validateBoxAllocation(tx, body.shipmentItemId, params.boxId, body.quantity);
       if (!validation.valid) throw new ApiError(validation.error ?? "Invalid allocation", 422);
       const item = await tx.shipment_line_items.findUnique({ where: { id: body.shipmentItemId }, include: { products: true } });

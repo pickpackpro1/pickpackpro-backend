@@ -1,5 +1,6 @@
 import { Prisma, ShipmentStatus, SubShipmentStatus } from "@prisma/client";
 import { ApiError } from "./apiResponse";
+import { areDispatchableBoxesDispatched, areDispatchableBoxLabelsReady } from "./pallets";
 
 type Db = Prisma.TransactionClient;
 
@@ -144,8 +145,8 @@ export async function refreshSubShipmentStatusFromBoxes(prisma: Db, subShipmentI
   const boxes = subShipment.outbound_boxes;
   if (boxes.length === 0) return subShipment;
 
-  const allDispatched = boxes.every((box) => box.dispatched_at !== null);
-  const allLabelsUploaded = boxes.every((box) => box.fba_shipping_label_file_id !== null);
+  const allDispatched = areDispatchableBoxesDispatched(boxes);
+  const allLabelsUploaded = areDispatchableBoxLabelsReady(boxes);
   const nextStatus: SubShipmentStatus = allDispatched
     ? "dispatched"
     : allLabelsUploaded

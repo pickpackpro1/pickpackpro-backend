@@ -1,13 +1,12 @@
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
+import { assertBoxCanBeModified } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 
 export async function DELETE(req: Request, { params }: { params: { boxId: string; itemId: string } }) {
   try {
     await requireRole(req, ["admin", "staff"]);
-    const box = await prisma.outbound_boxes.findUnique({ where: { id: params.boxId } });
-    if (!box) throw new ApiError("Box not found", 404);
-    if (box.dispatched_at) throw new ApiError("Sealed boxes cannot be modified", 422);
+    const box = await assertBoxCanBeModified(prisma, params.boxId);
     const contents = (box.contents as Array<{ id?: string }> | null) ?? [];
     const updated = await prisma.outbound_boxes.update({
       where: { id: params.boxId },

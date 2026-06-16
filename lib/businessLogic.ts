@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient, ShipmentStatus } from "@prisma/client";
 import { ApiError } from "./apiResponse";
+import { areDispatchableBoxesDispatched } from "./pallets";
 
 export function calculateDispatchQty(receivedQty: number, bundleSize = 1) {
   return Math.floor(receivedQty / Math.max(bundleSize, 1));
@@ -101,8 +102,11 @@ export async function validateStatusTransition(
       }
       return { valid: true };
     }
-    const boxes = await prisma.outbound_boxes.findMany({ where: { shipment_id: shipment.id } });
+    const boxes = await prisma.outbound_boxes.findMany({ where: { shipment_id: shipment.id, sub_shipment_id: null } });
     if (boxes.length === 0) return { valid: false, reason: "No boxes created for this shipment" };
+    if (!areDispatchableBoxesDispatched(boxes)) {
+      return { valid: false, reason: "Not all dispatchable boxes or pallets have been dispatched" };
+    }
   }
   return { valid: true };
 }
@@ -129,6 +133,8 @@ export async function validateBoxAllocation(
   if (!item) return { valid: false, error: "Item not found" };
   if (item.qty_received === null) return { valid: false, error: "Item not yet received" };
   if (!box) return { valid: false, error: "Box not found" };
+  if (box.box_type === "pallet") return { valid: false, error: "Pallets cannot hold SKU contents directly" };
+  if (box.pallet_id) return { valid: false, error: "Boxes inside a pallet cannot be modified individually" };
   if (box.shipment_id !== item.shipment_id) return { valid: false, error: "Box does not belong to item shipment" };
 
   let maxAllocatable = item.qty_received ?? item.qty_expected ?? item.dispatch_qty ?? 0;

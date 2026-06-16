@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
+import { areDispatchableBoxesDispatched } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { refreshParentShipmentDispatchStatus } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -28,7 +29,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           orderBy: { created_at: "asc" },
         },
         outbound_boxes: {
-          include: { uploaded_files: true },
+          include: {
+            uploaded_files: true,
+            pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+            pallet_children: { include: { uploaded_files: true }, orderBy: { box_number: "asc" } },
+          },
           orderBy: { box_number: "asc" },
         },
       },
@@ -58,8 +63,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
       if (body.status === "dispatched") {
         if (subShipment.outbound_boxes.length === 0) throw new ApiError("No boxes created for this sub-shipment", 422);
-        if (subShipment.outbound_boxes.some((box) => box.dispatched_at === null)) {
-          throw new ApiError("Dispatch all sub-shipment boxes before marking it dispatched", 422);
+        if (!areDispatchableBoxesDispatched(subShipment.outbound_boxes)) {
+          throw new ApiError("Dispatch all sub-shipment boxes or pallets before marking it dispatched", 422);
         }
       }
 

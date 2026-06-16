@@ -45,6 +45,7 @@ export async function GET(req: Request) {
       prisma.outbound_boxes.findMany({
         where: {
           fba_shipping_label_file_id: null,
+          pallet_id: null,
           shipments: { status: "prepped", soft_deleted_at: null },
         },
         include: { shipments: { include: { clients: true } } },

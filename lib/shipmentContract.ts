@@ -12,6 +12,11 @@ export const shipmentContractInclude = {
   outbound_boxes: {
     include: {
       uploaded_files: true,
+      pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+      pallet_children: {
+        include: { uploaded_files: true },
+        orderBy: { box_number: "asc" },
+      },
     },
     orderBy: { box_number: "asc" },
   },
@@ -26,7 +31,14 @@ export const shipmentContractInclude = {
         },
       },
       outbound_boxes: {
-        include: { uploaded_files: true },
+        include: {
+          uploaded_files: true,
+          pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+          pallet_children: {
+            include: { uploaded_files: true },
+            orderBy: { box_number: "asc" },
+          },
+        },
         orderBy: { box_number: "asc" },
       },
     },
@@ -177,10 +189,30 @@ function sortLineItems(items: ShipmentContractPayload["shipment_line_items"]) {
   });
 }
 
-function serializeOutboundBox(box: Record<string, any>) {
+function serializeOutboundBox(box: Record<string, any>): Record<string, any> {
   const labelFile = serializeUploadedFile(box.uploaded_files);
+  const palletChildren = (box.pallet_children ?? []).map((child: Record<string, any>) => serializeOutboundBox(child));
+  const isPallet = box.box_type === "pallet";
+  const insidePallet = Boolean(box.pallet_id);
+  const canDispatchDirectly = !insidePallet && (isPallet || Boolean(box.fba_shipping_label_file_id));
   return {
     ...box,
+    palletId: box.pallet_id,
+    pallet_id: box.pallet_id,
+    parentPallet: box.pallet ?? null,
+    parent_pallet: box.pallet ?? null,
+    palletChildren,
+    pallet_children: palletChildren,
+    childBoxes: palletChildren,
+    child_boxes: palletChildren,
+    isPallet,
+    is_pallet: isPallet,
+    insidePallet,
+    inside_pallet: insidePallet,
+    canDispatchDirectly,
+    can_dispatch_directly: canDispatchDirectly,
+    isDispatchable: !insidePallet,
+    is_dispatchable: !insidePallet,
     fbaShippingLabelFileId: box.fba_shipping_label_file_id,
     fba_shipping_label_file_id: box.fba_shipping_label_file_id,
     fbaShippingLabelFile: labelFile,
@@ -190,6 +222,8 @@ function serializeOutboundBox(box: Record<string, any>) {
 }
 
 function serializeSubShipment(subShipment: Record<string, any>) {
+  const boxes: Record<string, any>[] = (subShipment.outbound_boxes ?? []).map(serializeOutboundBox);
+  const dispatchableBoxes = boxes.filter((box) => !box.pallet_id);
   return {
     ...subShipment,
     sequenceNo: subShipment.sequence_no,
@@ -211,14 +245,20 @@ function serializeSubShipment(subShipment: Record<string, any>) {
       quantity: item.quantity,
     })),
     sub_shipment_items: subShipment.sub_shipment_items ?? [],
-    boxes: (subShipment.outbound_boxes ?? []).map(serializeOutboundBox),
-    outbound_boxes: (subShipment.outbound_boxes ?? []).map(serializeOutboundBox),
+    boxes,
+    outbound_boxes: boxes,
+    dispatchableBoxes,
+    dispatchable_boxes: dispatchableBoxes,
+    pallets: boxes.filter((box: Record<string, any>) => box.box_type === "pallet"),
+    looseBoxes: boxes.filter((box: Record<string, any>) => box.box_type === "box" && !box.pallet_id),
+    loose_boxes: boxes.filter((box: Record<string, any>) => box.box_type === "box" && !box.pallet_id),
   };
 }
 
 export function serializeShipment(shipment: ShipmentContractPayload) {
   const lineItems = sortLineItems(shipment.shipment_line_items).map(serializeLineItem);
-  const boxes = (shipment.outbound_boxes ?? []).map(serializeOutboundBox);
+  const boxes: Record<string, any>[] = (shipment.outbound_boxes ?? []).map(serializeOutboundBox);
+  const dispatchableBoxes = boxes.filter((box) => !box.pallet_id);
   const subShipments = (shipment.sub_shipments ?? []).map(serializeSubShipment);
   const discrepancies = lineItems.filter((item) => item.qty_discrepancy_flag);
   const totalExpectedQty = lineItems.reduce((sum, item) => sum + Number(item.qty_expected || 0), 0);
@@ -257,6 +297,11 @@ export function serializeShipment(shipment: ShipmentContractPayload) {
     items: lineItems,
     outbound_boxes: boxes,
     boxes,
+    dispatchableBoxes,
+    dispatchable_boxes: dispatchableBoxes,
+    pallets: boxes.filter((box) => box.box_type === "pallet"),
+    looseBoxes: boxes.filter((box) => box.box_type === "box" && !box.pallet_id),
+    loose_boxes: boxes.filter((box) => box.box_type === "box" && !box.pallet_id),
     sub_shipments: subShipments,
     subShipments,
     discrepancies,

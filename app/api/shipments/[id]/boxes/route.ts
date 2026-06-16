@@ -18,7 +18,17 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const user = await requireUser(req);
     const shipment = await prisma.shipments.findUnique({
       where: { id: params.id },
-      include: { outbound_boxes: true, shipment_line_items: { include: { products: true } } },
+      include: {
+        outbound_boxes: {
+          include: {
+            uploaded_files: true,
+            pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+            pallet_children: { include: { uploaded_files: true }, orderBy: { box_number: "asc" } },
+          },
+          orderBy: { box_number: "asc" },
+        },
+        shipment_line_items: { include: { products: true } },
+      },
     });
     if (!shipment) throw new ApiError("Shipment not found", 404);
     if (user.role === "client") await requireClientAccess(req, shipment.client_id);
@@ -56,6 +66,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     await requireRole(req, ["admin", "staff"]);
     const body = await json(req, schema);
     const box = await prisma.$transaction(async (tx) => {
+      if (body.boxType === "pallet") {
+        throw new ApiError("Use the pallet endpoint to create pallets from selected boxes", 422);
+      }
       if (body.subShipmentId) {
         const subShipment = await tx.sub_shipments.findUnique({ where: { id: body.subShipmentId } });
         if (!subShipment) throw new ApiError("Sub-shipment not found", 404);

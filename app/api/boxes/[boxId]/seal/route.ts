@@ -3,6 +3,7 @@ import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
+import { areDispatchableBoxesDispatched, dispatchBoxOrPallet } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -14,10 +15,7 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
     const user = await requireRole(req, ["admin", "staff"]);
     await json(req, schema);
     const box = await prisma.$transaction(async (tx) => {
-      const updatedBox = await tx.outbound_boxes.update({
-        where: { id: params.boxId },
-        data: { dispatched_at: new Date() },
-      });
+      const updatedBox = await dispatchBoxOrPallet(tx, params.boxId);
       if (updatedBox.sub_shipment_id) {
         await refreshSubShipmentStatusFromBoxes(tx, updatedBox.sub_shipment_id, user.userId);
       }
@@ -27,7 +25,7 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
       const subShipmentCount = await tx.sub_shipments.count({
         where: { parent_shipment_id: updatedBox.shipment_id, status: { not: "cancelled" } },
       });
-      if (!updatedBox.sub_shipment_id && subShipmentCount === 0 && boxes.length > 0 && boxes.every((box) => box.dispatched_at !== null)) {
+      if (!updatedBox.sub_shipment_id && subShipmentCount === 0 && areDispatchableBoxesDispatched(boxes)) {
         const shipment = await tx.shipments.update({
           where: { id: updatedBox.shipment_id },
           data: { status: "dispatched", dispatched_date: new Date(), updated_at: new Date() },

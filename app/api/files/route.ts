@@ -103,7 +103,7 @@ export async function POST(req: Request) {
       });
     }
 
-    if (entityType === "box" && fileType === "fba_shipping_label") {
+    if ((entityType === "box" || entityType === "pallet") && fileType === "fba_shipping_label") {
       await prisma.outbound_boxes.update({
         where: { id: entityId },
         data: { fba_shipping_label_file_id: record.id, label_uploaded_at: new Date() },

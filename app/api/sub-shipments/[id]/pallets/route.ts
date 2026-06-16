@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { handleApiError, success } from "@/lib/apiResponse";
+import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { createPalletWithBoxes } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +10,6 @@ const schema = z.object({
   boxIds: z.array(z.string().uuid()).optional(),
   childBoxIds: z.array(z.string().uuid()).optional(),
   selectedBoxIds: z.array(z.string().uuid()).optional(),
-  subShipmentId: z.string().uuid().optional().nullable(),
   weight: z.coerce.number().nonnegative().optional(),
   dimensions: z
     .object({
@@ -30,16 +29,20 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const user = await requireRole(req, ["admin", "staff"]);
     const body = await json(req, schema);
     const pallet = await prisma.$transaction(async (tx) => {
+      const subShipment = await tx.sub_shipments.findUnique({
+        where: { id: params.id },
+        select: { id: true, parent_shipment_id: true },
+      });
+      if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
+
       const created = await createPalletWithBoxes(tx, {
-        shipmentId: params.id,
-        subShipmentId: body.subShipmentId,
+        shipmentId: subShipment.parent_shipment_id,
+        subShipmentId: subShipment.id,
         boxIds: requestedBoxIds(body),
         dimensions: body.dimensions,
         weight: body.weight,
       });
-      if (created.sub_shipment_id) {
-        await refreshSubShipmentStatusFromBoxes(tx, created.sub_shipment_id);
-      }
+      await refreshSubShipmentStatusFromBoxes(tx, subShipment.id);
       await tx.audit_logs.create({
         data: {
           user_id: user.userId,
@@ -53,6 +56,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       });
       return created;
     });
+
     return success(pallet, 201);
   } catch (err) {
     return handleApiError(err);

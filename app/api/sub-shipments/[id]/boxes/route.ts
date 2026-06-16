@@ -19,7 +19,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       include: {
         shipments: { select: { client_id: true } },
         outbound_boxes: {
-          include: { uploaded_files: true },
+          include: {
+            uploaded_files: true,
+            pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+            pallet_children: { include: { uploaded_files: true }, orderBy: { box_number: "asc" } },
+          },
           orderBy: { box_number: "asc" },
         },
         sub_shipment_items: {
@@ -68,6 +72,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     await requireRole(req, ["admin", "staff"]);
     const body = await json(req, schema);
     const box = await prisma.$transaction(async (tx) => {
+      if (body.boxType === "pallet") {
+        throw new ApiError("Use the pallet endpoint to create pallets from selected boxes", 422);
+      }
       const subShipment = await tx.sub_shipments.findUnique({ where: { id: params.id } });
       if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
       if (subShipment.status === "dispatched" || subShipment.status === "completed" || subShipment.status === "cancelled") {
