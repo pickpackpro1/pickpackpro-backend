@@ -1,25 +1,25 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
 const productSchema = z
   .object({
-    clientId: z.string().uuid(),
+    clientId: z.string().uuid().optional(),
     productName: z.string().min(1),
     sku: z.string().min(1),
     defaultFnsku: z.string().optional().nullable(),
-    lengthCm: z.number().nonnegative(),
-    widthCm: z.number().nonnegative(),
-    heightCm: z.number().nonnegative(),
-    weightKg: z.number().nonnegative(),
+    lengthCm: z.coerce.number().nonnegative(),
+    widthCm: z.coerce.number().nonnegative(),
+    heightCm: z.coerce.number().nonnegative(),
+    weightKg: z.coerce.number().nonnegative(),
     hazmatFlag: z.boolean().default(false),
     expiryTracked: z.boolean().default(false),
     lotTracked: z.boolean().default(false),
     needsBundling: z.boolean().default(false),
-    bundleSize: z.number().int().positive().optional().nullable(),
+    bundleSize: z.coerce.number().int().positive().optional().nullable(),
     active: z.boolean().default(true),
   })
   .superRefine((value, ctx) => {
@@ -34,7 +34,7 @@ const productSchema = z
 
 export async function GET(req: Request) {
   try {
-    const user = await requireUser(req);
+    const user = await requireRole(req, ["admin", "client"]);
     const url = new URL(req.url);
     const activeParam = url.searchParams.get("active");
     const clientId = user.role === "client" ? user.clientId : url.searchParams.get("clientId");
@@ -77,12 +77,17 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const user = await requireRole(req, ["admin"]);
+    const user = await requireRole(req, ["admin", "client"]);
     const body = await json(req, productSchema);
+    const clientId = user.role === "client" ? user.clientId : body.clientId;
+    if (!clientId) throw new ApiError("clientId is required", 400);
+
+    const client = await prisma.clients.findFirst({ where: { id: clientId, soft_deleted_at: null } });
+    if (!client) throw new ApiError("Client not found", 404);
 
     const product = await prisma.products.create({
       data: {
-        client_id: body.clientId,
+        client_id: clientId,
         product_name: body.productName,
         sku: body.sku,
         default_fnsku: body.defaultFnsku ?? null,
@@ -94,7 +99,7 @@ export async function POST(req: Request) {
         expiry_tracked: body.expiryTracked,
         lot_tracked: body.lotTracked,
         needs_bundling: body.needsBundling,
-        bundle_size: body.bundleSize ?? null,
+        bundle_size: body.needsBundling ? body.bundleSize ?? null : null,
         active: body.active,
       },
       include: { clients: true },

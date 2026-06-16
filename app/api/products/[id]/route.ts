@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
@@ -9,15 +9,15 @@ const patchSchema = z
   .object({
     productName: z.string().min(1).optional(),
     defaultFnsku: z.string().optional().nullable(),
-    lengthCm: z.number().nonnegative().optional(),
-    widthCm: z.number().nonnegative().optional(),
-    heightCm: z.number().nonnegative().optional(),
-    weightKg: z.number().nonnegative().optional(),
+    lengthCm: z.coerce.number().nonnegative().optional(),
+    widthCm: z.coerce.number().nonnegative().optional(),
+    heightCm: z.coerce.number().nonnegative().optional(),
+    weightKg: z.coerce.number().nonnegative().optional(),
     hazmatFlag: z.boolean().optional(),
     expiryTracked: z.boolean().optional(),
     lotTracked: z.boolean().optional(),
     needsBundling: z.boolean().optional(),
-    bundleSize: z.number().int().positive().optional().nullable(),
+    bundleSize: z.coerce.number().int().positive().optional().nullable(),
     active: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
@@ -32,7 +32,7 @@ const patchSchema = z
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
-    const user = await requireUser(req);
+    const user = await requireRole(req, ["admin", "client"]);
     const product = await prisma.products.findFirst({
       where: { id: params.id, soft_deleted_at: null },
       include: { clients: true },
@@ -49,10 +49,19 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
-    const user = await requireRole(req, ["admin"]);
+    const user = await requireRole(req, ["admin", "client"]);
     const body = await json(req, patchSchema);
     const before = await prisma.products.findFirst({ where: { id: params.id, soft_deleted_at: null } });
     if (!before) throw new ApiError("Product not found", 404);
+    if (user.role === "client" && before.client_id !== user.clientId) {
+      throw new ApiError("Cannot edit another client's product", 403);
+    }
+
+    const effectiveNeedsBundling = body.needsBundling ?? before.needs_bundling;
+    const effectiveBundleSize = body.bundleSize === undefined ? before.bundle_size : body.bundleSize;
+    if (effectiveNeedsBundling && !effectiveBundleSize) {
+      throw new ApiError("bundleSize is required when needsBundling is true", 422);
+    }
 
     const product = await prisma.products.update({
       where: { id: params.id },
@@ -67,7 +76,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         expiry_tracked: body.expiryTracked,
         lot_tracked: body.lotTracked,
         needs_bundling: body.needsBundling,
-        bundle_size: body.bundleSize,
+        bundle_size: body.needsBundling === false ? null : body.bundleSize,
         active: body.active,
       },
       include: { clients: true },
