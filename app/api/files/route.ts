@@ -3,11 +3,15 @@ import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireUser } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { DRAFT_FNSKU_ENTITY_TYPES } from "@/lib/shipmentDrafts";
 import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
 async function clientIdForEntity(entityType: string, entityId: string, fallback?: string | null) {
   if (entityType === "shipment") return (await prisma.shipments.findUnique({ where: { id: entityId } }))?.client_id;
+  if (DRAFT_FNSKU_ENTITY_TYPES.includes(entityType)) {
+    return (await prisma.shipments.findUnique({ where: { id: entityId } }))?.client_id;
+  }
   if (entityType === "sub_shipment" || entityType === "subShipment") {
     const subShipment = await prisma.sub_shipments.findUnique({
       where: { id: entityId },
@@ -28,6 +32,54 @@ async function clientIdForEntity(entityType: string, entityId: string, fallback?
     return box?.shipments?.client_id;
   }
   return fallback ?? undefined;
+}
+
+function optionalText(value: FormDataEntryValue | null) {
+  const text = String(value ?? "").trim();
+  return text || undefined;
+}
+
+function optionalNumber(value: FormDataEntryValue | null) {
+  const text = optionalText(value);
+  if (!text) return undefined;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function metadataFromForm(form: FormData) {
+  const rawMetadata = optionalText(form.get("metadata"));
+  let metadata: Record<string, unknown> = {};
+  if (rawMetadata) {
+    try {
+      const parsed = JSON.parse(rawMetadata);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        metadata = parsed;
+      }
+    } catch {
+      throw new ApiError("metadata must be valid JSON", 400);
+    }
+  }
+
+  const draftItemId = optionalText(form.get("draftItemId")) ?? optionalText(form.get("draft_item_id"));
+  const itemIndex = optionalNumber(form.get("itemIndex")) ?? optionalNumber(form.get("item_index"));
+  const lineItemIndex = optionalNumber(form.get("lineItemIndex")) ?? optionalNumber(form.get("line_item_index"));
+  const displayOrder = optionalNumber(form.get("displayOrder")) ?? optionalNumber(form.get("display_order"));
+  const sku = optionalText(form.get("sku"));
+  const fnsku = optionalText(form.get("fnsku")) ?? optionalText(form.get("fnskuLabel")) ?? optionalText(form.get("fnsku_label"));
+  const productName = optionalText(form.get("productName")) ?? optionalText(form.get("product_name"));
+
+  return JSON.parse(
+    JSON.stringify({
+      ...metadata,
+      ...(draftItemId ? { draftItemId, draft_item_id: draftItemId } : {}),
+      ...(itemIndex != null ? { itemIndex, item_index: itemIndex } : {}),
+      ...(lineItemIndex != null ? { lineItemIndex, line_item_index: lineItemIndex } : {}),
+      ...(displayOrder != null ? { displayOrder, display_order: displayOrder } : {}),
+      ...(sku ? { sku } : {}),
+      ...(fnsku ? { fnsku, fnskuLabel: fnsku, fnsku_label: fnsku } : {}),
+      ...(productName ? { productName, product_name: productName } : {}),
+    })
+  );
 }
 
 export async function GET(req: Request) {
@@ -71,10 +123,24 @@ export async function POST(req: Request) {
     const entityType = String(form.get("entityType") ?? "");
     const entityId = String(form.get("entityId") ?? "");
     const fileType = String(form.get("fileType") ?? "other") as FileType;
+    const isDraftFnskuFile = DRAFT_FNSKU_ENTITY_TYPES.includes(entityType);
+    const metadata = metadataFromForm(form);
     if (!(file instanceof File)) throw new ApiError("file is required", 400);
     const clientId = await clientIdForEntity(entityType, entityId, user.clientId);
     if (!clientId) throw new ApiError("Could not resolve client for file", 400);
     await requireClientAccess(req, clientId);
+    if (isDraftFnskuFile && fileType !== "fnsku_label") {
+      throw new ApiError("Draft shipment item uploads must use fileType fnsku_label", 422);
+    }
+    if (
+      isDraftFnskuFile &&
+      !metadata.draftItemId &&
+      metadata.itemIndex == null &&
+      metadata.lineItemIndex == null &&
+      metadata.displayOrder == null
+    ) {
+      throw new ApiError("Draft FNSKU uploads require draftItemId or item index metadata", 422);
+    }
     if (entityType === "shipment" && fileType === "fnsku_label") {
       throw new ApiError("FNSKU labels must be uploaded against a shipment line item", 422);
     }
@@ -93,6 +159,7 @@ export async function POST(req: Request) {
         mime_type: file.type || "application/octet-stream",
         linked_entity_type: entityType,
         linked_entity_id: entityId,
+        metadata,
       },
     });
     // Link when entityType is 'item' or 'label' (line item UUID passed directly)
@@ -207,6 +274,7 @@ export async function POST(req: Request) {
       publicUrl: publicData.publicUrl,
       storagePath: path,
       fileRecordId: record.id,
+      metadata,
     }, 201);
   } catch (err) {
     return handleApiError(err);

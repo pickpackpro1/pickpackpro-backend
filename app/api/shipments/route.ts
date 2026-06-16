@@ -5,58 +5,23 @@ import { requireClientAccess, requireUser } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { generateShipmentRef } from "@/lib/referenceGen";
+import {
+  attachDraftFnskuFiles,
+  buildDraftPayload,
+  createShipmentLineItems,
+  draftItemSchema,
+  parseSubmittedItems,
+} from "@/lib/shipmentDrafts";
 import { serializeShipment, shipmentContractInclude } from "@/lib/shipmentContract";
 import { json } from "@/lib/validation";
-
-const itemSchema = z.object({
-  sku: z.string().min(1),
-  productName: z.string().min(1),
-  expectedQty: z.coerce.number().int().positive(),
-  bundleSize: z.coerce.number().int().positive().optional(),
-  bundle_size: z.coerce.number().int().positive().optional(),
-  needsBundling: z.boolean().optional(),
-  needs_bundling: z.boolean().optional(),
-  itemIndex: z.coerce.number().int().nonnegative().optional(),
-  item_index: z.coerce.number().int().nonnegative().optional(),
-  lineItemIndex: z.coerce.number().int().nonnegative().optional(),
-  line_item_index: z.coerce.number().int().nonnegative().optional(),
-  displayOrder: z.coerce.number().int().nonnegative().optional(),
-  display_order: z.coerce.number().int().nonnegative().optional(),
-  fnskuLabel: z.string().optional().nullable(),
-  notes: z.string().optional().nullable(),
-  services: z.array(z.string()).default(["FNSKU_LABEL", "POLY_BAG", "BUBBLE_WRAP", "BUNDLING"]),
-});
 
 const createSchema = z.object({
   clientId: z.string().uuid(),
   notes: z.string().optional().nullable(),
   expectedArrivalDate: z.coerce.date().optional(),
   isDraft: z.boolean().default(false),
-  items: z.array(itemSchema).min(1),
+  items: z.array(draftItemSchema).default([]),
 });
-
-type ShipmentItemInput = z.infer<typeof itemSchema>;
-
-function firstNumber(...values: Array<number | null | undefined>) {
-  return values.find((value) => typeof value === "number" && Number.isFinite(value));
-}
-
-function getBundleSize(item: ShipmentItemInput) {
-  return firstNumber(item.bundleSize, item.bundle_size) ?? 1;
-}
-
-function getNeedsBundling(item: ShipmentItemInput) {
-  const bundleSize = getBundleSize(item);
-  return item.needsBundling ?? item.needs_bundling ?? bundleSize > 1;
-}
-
-function getDisplayOrder(item: ShipmentItemInput, index: number) {
-  return firstNumber(item.displayOrder, item.display_order, item.itemIndex, item.item_index, item.lineItemIndex, item.line_item_index) ?? index;
-}
-
-function buildServiceStatus(services: string[]) {
-  return Object.fromEntries(services.map((service) => [service, "PENDING"]));
-}
 
 export async function GET(req: Request) {
   try {
@@ -95,6 +60,16 @@ export async function POST(req: Request) {
   try {
     const body = await json(req, createSchema);
     const user = await requireClientAccess(req, body.clientId);
+    const submittedItems = body.isDraft ? [] : parseSubmittedItems(body.items);
+    const draftPayload = body.isDraft
+      ? buildDraftPayload({
+          clientId: body.clientId,
+          notes: body.notes ?? null,
+          expectedArrivalDate: body.expectedArrivalDate ?? null,
+          items: body.items,
+        })
+      : undefined;
+
     const shipment = await prisma.$transaction(async (tx) => {
       const reference = await generateShipmentRef(tx as typeof prisma);
       const created = await tx.shipments.create({
@@ -104,51 +79,16 @@ export async function POST(req: Request) {
           status: body.isDraft ? "draft" : "pending_arrival",
           expected_arrival_date: body.expectedArrivalDate ?? new Date(),
           client_notes: body.notes ?? null,
+          draft_payload: draftPayload,
+          draft_saved_at: body.isDraft ? new Date() : null,
           submitted_at: body.isDraft ? null : new Date(),
           submitted_by: body.isDraft ? null : user.userId,
         },
       });
 
-      for (const [index, item] of body.items.entries()) {
-        const bundleSize = getBundleSize(item);
-        const needsBundling = getNeedsBundling(item);
-        const product = await tx.products.upsert({
-          where: { client_id_sku: { client_id: body.clientId, sku: item.sku } },
-          update: {
-            product_name: item.productName,
-            default_fnsku: item.fnskuLabel ?? undefined,
-            needs_bundling: needsBundling,
-            bundle_size: bundleSize,
-          },
-          create: {
-            client_id: body.clientId,
-            sku: item.sku,
-            product_name: item.productName,
-            default_fnsku: item.fnskuLabel ?? null,
-            length_cm: 0,
-            width_cm: 0,
-            height_cm: 0,
-            weight_kg: 0,
-            needs_bundling: needsBundling,
-            bundle_size: bundleSize,
-          },
-        });
-
-        await tx.shipment_line_items.create({
-          data: {
-            shipment_id: created.id,
-            product_id: product.id,
-            fnsku: item.fnskuLabel ?? item.sku,
-            qty_expected: item.expectedQty,
-            dispatch_qty: null,
-            needs_bundling: needsBundling,
-            bundle_size: bundleSize,
-            display_order: getDisplayOrder(item, index),
-            services_selected: item.services,
-            service_status: buildServiceStatus(item.services),
-            discrepancy_notes: item.notes ?? null,
-          },
-        });
+      if (!body.isDraft) {
+        const createdLineItems = await createShipmentLineItems(tx, created.id, body.clientId, submittedItems);
+        await attachDraftFnskuFiles(tx, created.id, createdLineItems);
       }
 
       return tx.shipments.findUniqueOrThrow({
@@ -168,6 +108,8 @@ export async function POST(req: Request) {
         after_value: JSON.parse(JSON.stringify(serializedShipment)),
       },
     });
+    if (body.isDraft) return success(serializedShipment, 201);
+
     const admins = await prisma.users.findMany({ where: { role: "admin", active: true } });
     await prisma.notifications.createMany({
       data: admins.map((admin) => ({

@@ -265,6 +265,8 @@ model shipments {
   dispatched_date                     DateTime?             @db.Date
   completed_date                      DateTime?             @db.Date
   client_notes                        String?
+  draft_payload                       Json?
+  draft_saved_at                      DateTime?             @db.Timestamptz(6)
   submitted_at                        DateTime?             @db.Timestamptz(6)
   submitted_by                        String?               @db.Uuid
   received_by                         String?               @db.Uuid
@@ -283,6 +285,7 @@ model shipments {
 
   @@index([expected_arrival_date], map: "idx_shipments_arrival")
   @@index([client_id], map: "idx_shipments_client_id")
+  @@index([draft_saved_at], map: "idx_shipments_draft_saved_at")
   @@index([status], map: "idx_shipments_status")
 }
 
@@ -352,6 +355,7 @@ model uploaded_files {
   mime_type                                      String
   linked_entity_type                             String?
   linked_entity_id                               String?               @db.Uuid
+  metadata                                       Json?
   uploaded_at                                    DateTime              @default(now()) @db.Timestamptz(6)
   invoices_invoices_pdf_file_idTouploaded_files  invoices[]            @relation("invoices_pdf_file_idTouploaded_files")
   invoices_invoices_xlsx_file_idTouploaded_files invoices[]            @relation("invoices_xlsx_file_idTouploaded_files")
@@ -360,6 +364,7 @@ model uploaded_files {
   clients                                        clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([client_id], map: "idx_uploaded_files_client")
+  @@index([linked_entity_type, linked_entity_id], map: "idx_uploaded_files_linked_entity")
 }
 
 model users {

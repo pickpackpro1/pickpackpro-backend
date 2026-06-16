@@ -1,13 +1,18 @@
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
-import { requireRole } from "@/lib/auth";
+import { requireClientAccess, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   try {
-    await requireRole(req, ["admin", "staff"]);
+    const user = await requireUser(req);
     const record = await prisma.uploaded_files.findUnique({ where: { id: params.id } });
     if (!record) throw new ApiError("File not found", 404);
+    if (user.role === "client") {
+      await requireClientAccess(req, record.client_id);
+    } else if (user.role !== "admin" && user.role !== "staff") {
+      throw new ApiError("Forbidden", 403);
+    }
     if (record.file_type === "fnsku_label") {
       await prisma.shipment_line_items.updateMany({
         where: { fnsku_label_file_id: record.id },
