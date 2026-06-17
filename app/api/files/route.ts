@@ -172,9 +172,17 @@ export async function POST(req: Request) {
     });
     // Link when entityType is 'item' or 'label' (line item UUID passed directly)
     if ((entityType === "label" || entityType === "item") && fileType === "fnsku_label") {
-      await prisma.shipment_line_items.update({
+      const lineItem = await prisma.shipment_line_items.update({
         where: { id: entityId },
         data: { fnsku_label_file_id: record.id, updated_at: new Date() },
+        select: { product_id: true },
+      });
+      await prisma.products.updateMany({
+        where: {
+          id: lineItem.product_id,
+          default_fnsku_label_file_id: null,
+        },
+        data: { default_fnsku_label_file_id: record.id },
       });
     }
 
