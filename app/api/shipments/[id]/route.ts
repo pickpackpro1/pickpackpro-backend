@@ -140,6 +140,13 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
             fba_shipping_label_file_id: true,
           },
         },
+        sub_shipments: {
+          select: {
+            id: true,
+            reference: true,
+            status: true,
+          },
+        },
       },
     });
     if (!shipment) throw new ApiError("Shipment not found", 404);
@@ -151,6 +158,80 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
 
     const lineItemIds = shipment.shipment_line_items.map((item) => item.id);
     const boxIds = shipment.outbound_boxes.map((box) => box.id);
+    const subShipmentIds = shipment.sub_shipments.map((subShipment) => subShipment.id);
+    const invoiceSelect = {
+      id: true,
+      invoice_number: true,
+      status: true,
+      invoice_type: true,
+      shipment_id: true,
+      sub_shipment_id: true,
+    } satisfies Prisma.invoicesSelect;
+    const directInvoiceWhere: Prisma.invoicesWhereInput[] = [{ shipment_id: params.id }];
+    const invoiceLineWhere: Prisma.invoice_line_itemsWhereInput[] = [{ shipment_id: params.id }];
+    if (subShipmentIds.length > 0) {
+      directInvoiceWhere.push({ sub_shipment_id: { in: subShipmentIds } });
+      invoiceLineWhere.push({ sub_shipment_id: { in: subShipmentIds } });
+    }
+    if (lineItemIds.length > 0) {
+      invoiceLineWhere.push({ shipment_line_item_id: { in: lineItemIds } });
+    }
+
+    const [directInvoices, invoiceLines] = await Promise.all([
+      prisma.invoices.findMany({
+        where: { OR: directInvoiceWhere },
+        select: invoiceSelect,
+      }),
+      prisma.invoice_line_items.findMany({
+        where: { OR: invoiceLineWhere },
+        select: {
+          invoices: {
+            select: invoiceSelect,
+          },
+        },
+      }),
+    ]);
+    const blockingInvoicesById = new Map<string, (typeof directInvoices)[number]>();
+    for (const invoice of directInvoices) blockingInvoicesById.set(invoice.id, invoice);
+    for (const line of invoiceLines) blockingInvoicesById.set(line.invoices.id, line.invoices);
+    const blockingInvoices = [...blockingInvoicesById.values()].map((invoice) => ({
+      id: invoice.id,
+      invoiceNumber: invoice.invoice_number,
+      invoice_number: invoice.invoice_number,
+      status: invoice.status,
+      invoiceType: invoice.invoice_type,
+      invoice_type: invoice.invoice_type,
+      shipmentId: invoice.shipment_id,
+      shipment_id: invoice.shipment_id,
+      subShipmentId: invoice.sub_shipment_id,
+      sub_shipment_id: invoice.sub_shipment_id,
+    }));
+
+    if (blockingInvoices.length > 0) {
+      if (user.role === "client") {
+        throw new ApiError(
+          "This shipment has an invoice. You do not have permission to delete this shipment. Please contact admin.",
+          403,
+          {
+            reason: "linked_invoice",
+            canDelete: false,
+            role: user.role,
+          },
+        );
+      }
+
+      throw new ApiError(
+        "This shipment has linked invoices. Delete or cancel the invoices first, then delete the shipment.",
+        409,
+        {
+          reason: "linked_invoice",
+          canDelete: false,
+          role: user.role,
+          blockingInvoices,
+        },
+      );
+    }
+
     const linkedFileIds = [
       ...shipment.shipment_line_items.map((item) => item.fnsku_label_file_id),
       ...shipment.outbound_boxes.map((box) => box.fba_shipping_label_file_id),
