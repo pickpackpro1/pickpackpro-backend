@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
+import { getSubShipmentBoxesWorkflowState } from "@/lib/boxWorkflowState";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
@@ -70,6 +71,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
     await requireRole(req, ["admin", "staff"]);
+    const includeWorkflow = new URL(req.url).searchParams.get("includeWorkflow") === "true";
     const body = await json(req, schema);
     const box = await prisma.$transaction(async (tx) => {
       if (body.boxType === "pallet") {
@@ -103,6 +105,23 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       }
       return created;
     });
+
+    if (includeWorkflow) {
+      const subShipmentBoxes = await getSubShipmentBoxesWorkflowState(prisma, params.id);
+
+      return success(
+        {
+          box,
+          workflowPatch: {
+            scope: "subShipmentBoxes",
+            shipmentId: subShipmentBoxes.subShipment.parentShipmentId,
+            subShipmentId: params.id,
+            subShipmentBoxes,
+          },
+        },
+        201,
+      );
+    }
 
     return success(box, 201);
   } catch (err) {
