@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ApiError } from "@/lib/apiResponse";
+import { PRODUCT_FNSKU_LABEL_ENTITY_TYPE } from "@/lib/productFnskuLabels";
 
 const DEFAULT_SERVICES = ["FNSKU_LABEL", "POLY_BAG", "BUBBLE_WRAP", "BUNDLING"];
 
@@ -189,6 +190,7 @@ export async function createShipmentLineItems(
 ) {
   const createdLineItems: Array<{
     lineItemId: string;
+    productId: string;
     item: SubmittedShipmentItemInput;
     index: number;
     displayOrder: number;
@@ -238,6 +240,7 @@ export async function createShipmentLineItems(
 
     createdLineItems.push({
       lineItemId: lineItem.id,
+      productId: product.id,
       item,
       index,
       displayOrder,
@@ -278,6 +281,7 @@ export async function attachDraftFnskuFiles(
   shipmentId: string,
   createdLineItems: Array<{
     lineItemId: string;
+    productId: string;
     item: SubmittedShipmentItemInput;
     index: number;
     displayOrder: number;
@@ -293,6 +297,7 @@ export async function attachDraftFnskuFiles(
   });
 
   const attachedFileIds = new Set<string>();
+  const attachedLineItemIds = new Set<string>();
 
   for (const created of createdLineItems) {
     const match = draftFiles.find(
@@ -330,5 +335,43 @@ export async function attachDraftFnskuFiles(
     });
 
     attachedFileIds.add(match.id);
+    attachedLineItemIds.add(created.lineItemId);
+  }
+
+  const productIds = [
+    ...new Set(
+      createdLineItems
+        .filter((created) => !attachedLineItemIds.has(created.lineItemId))
+        .map((created) => created.productId),
+    ),
+  ];
+  if (productIds.length === 0) return;
+
+  const productLabelFiles = await tx.uploaded_files.findMany({
+    where: {
+      file_type: "fnsku_label",
+      linked_entity_type: PRODUCT_FNSKU_LABEL_ENTITY_TYPE,
+      linked_entity_id: { in: productIds },
+    },
+    orderBy: { uploaded_at: "desc" },
+  });
+  const productLabelByProductId = new Map<string, string>();
+  for (const file of productLabelFiles) {
+    if (!file.linked_entity_id || productLabelByProductId.has(file.linked_entity_id)) continue;
+    productLabelByProductId.set(file.linked_entity_id, file.id);
+  }
+
+  for (const created of createdLineItems) {
+    if (attachedLineItemIds.has(created.lineItemId)) continue;
+    const productLabelFileId = productLabelByProductId.get(created.productId);
+    if (!productLabelFileId) continue;
+
+    await tx.shipment_line_items.update({
+      where: { id: created.lineItemId },
+      data: {
+        fnsku_label_file_id: productLabelFileId,
+        updated_at: new Date(),
+      },
+    });
   }
 }

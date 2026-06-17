@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getLatestProductFnskuLabelsByProductId, withDefaultFnskuLabelFile } from "@/lib/productFnskuLabels";
 import { json } from "@/lib/validation";
 
 const productSchema = z
@@ -69,7 +70,12 @@ export async function GET(req: Request) {
       orderBy: { created_at: "desc" },
     });
 
-    return success(products);
+    const labelsByProductId = await getLatestProductFnskuLabelsByProductId(
+      prisma,
+      products.map((product) => product.id),
+    );
+
+    return success(products.map((product) => withDefaultFnskuLabelFile(product, labelsByProductId.get(product.id))));
   } catch (err) {
     return handleApiError(err);
   }
@@ -117,7 +123,7 @@ export async function POST(req: Request) {
       },
     });
 
-    return success(product, 201);
+    return success(withDefaultFnskuLabelFile(product, null), 201);
   } catch (err) {
     return handleApiError(err);
   }

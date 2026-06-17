@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getLatestProductFnskuLabelsByProductId, withDefaultFnskuLabelFile } from "@/lib/productFnskuLabels";
 import { json } from "@/lib/validation";
 
 const patchSchema = z
@@ -41,7 +42,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     if (user.role === "client" && product.client_id !== user.clientId) {
       throw new ApiError("Cannot access another client's product", 403);
     }
-    return success(product);
+    const labelsByProductId = await getLatestProductFnskuLabelsByProductId(prisma, [product.id]);
+    return success(withDefaultFnskuLabelFile(product, labelsByProductId.get(product.id)));
   } catch (err) {
     return handleApiError(err);
   }
@@ -95,7 +97,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       },
     });
 
-    return success(product);
+    const labelsByProductId = await getLatestProductFnskuLabelsByProductId(prisma, [product.id]);
+    return success(withDefaultFnskuLabelFile(product, labelsByProductId.get(product.id)));
   } catch (err) {
     return handleApiError(err);
   }

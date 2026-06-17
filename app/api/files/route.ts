@@ -20,6 +20,9 @@ async function clientIdForEntity(entityType: string, entityId: string, fallback?
     return subShipment?.shipments.client_id;
   }
   if (entityType === "invoice") return (await prisma.invoices.findUnique({ where: { id: entityId } }))?.client_id;
+  if (entityType === "product") {
+    return (await prisma.products.findFirst({ where: { id: entityId, soft_deleted_at: null } }))?.client_id;
+  }
   if (entityType === "item" || entityType === "label") {
     const item = await prisma.shipment_line_items.findUnique({ where: { id: entityId }, include: { shipments: true } });
     return item?.shipments.client_id;
@@ -88,6 +91,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const entityType = url.searchParams.get("entityType") ?? undefined;
     const entityId = url.searchParams.get("entityId") ?? undefined;
+    if (entityType === "product" && user.role === "staff") throw new ApiError("Forbidden", 403);
     const clientId = entityType && entityId ? await clientIdForEntity(entityType, entityId, user.clientId) : user.clientId;
     const resolvedClientId = user.role === "client" ? user.clientId! : clientId;
     if (resolvedClientId) await requireClientAccess(req, resolvedClientId);
@@ -123,6 +127,7 @@ export async function POST(req: Request) {
     const entityType = String(form.get("entityType") ?? "");
     const entityId = String(form.get("entityId") ?? "");
     const fileType = String(form.get("fileType") ?? "other") as FileType;
+    if (entityType === "product" && user.role === "staff") throw new ApiError("Forbidden", 403);
     const isDraftFnskuFile = DRAFT_FNSKU_ENTITY_TYPES.includes(entityType);
     const metadata = metadataFromForm(form);
     if (!(file instanceof File)) throw new ApiError("file is required", 400);

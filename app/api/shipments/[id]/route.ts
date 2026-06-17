@@ -12,6 +12,7 @@ import {
   parseSubmittedItems,
 } from "@/lib/shipmentDrafts";
 import { serializeShipment, serializeUploadedFile, shipmentContractInclude } from "@/lib/shipmentContract";
+import { PRODUCT_FNSKU_LABEL_ENTITY_TYPE } from "@/lib/productFnskuLabels";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 import { json } from "@/lib/validation";
 
@@ -248,7 +249,10 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
         ],
       },
     });
-    const relatedFileIds = [...new Set(relatedFiles.map((file) => file.id))];
+    const deletableRelatedFiles = relatedFiles.filter(
+      (file) => file.linked_entity_type !== PRODUCT_FNSKU_LABEL_ENTITY_TYPE,
+    );
+    const relatedFileIds = [...new Set(deletableRelatedFiles.map((file) => file.id))];
 
     const deletedShipment = await prisma.$transaction(async (tx) => {
       await tx.outbound_boxes.deleteMany({ where: { shipment_id: params.id } });
@@ -278,7 +282,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     });
 
     const filesByBucket = new Map<string, string[]>();
-    for (const file of relatedFiles) {
+    for (const file of deletableRelatedFiles) {
       const bucket = bucketFor(file.file_type);
       filesByBucket.set(bucket, [...(filesByBucket.get(bucket) ?? []), file.storage_path]);
     }

@@ -8,6 +8,9 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     const user = await requireUser(req);
     const record = await prisma.uploaded_files.findUnique({ where: { id: params.id } });
     if (!record) throw new ApiError("File not found", 404);
+    if (record.linked_entity_type === "product" && user.role === "staff") {
+      throw new ApiError("Forbidden", 403);
+    }
     if (user.role === "client") {
       await requireClientAccess(req, record.client_id);
     } else if (user.role !== "admin" && user.role !== "staff") {
