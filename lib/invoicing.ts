@@ -1,9 +1,11 @@
 import { InvoiceStatus, Prisma, PrismaClient } from "@prisma/client";
 import { ApiError } from "./apiResponse";
 import { normalizeServiceCode } from "./businessLogic";
-import { generateInvoiceNumber } from "./referenceGen";
+import { generateInvoiceNumber, invoiceMonthKey } from "./referenceGen";
 
 type Db = PrismaClient | Prisma.TransactionClient;
+type DispatchInvoiceWhere = { shipmentId?: string; subShipmentId?: string };
+type InvoiceCreateData = Omit<Prisma.invoicesUncheckedCreateInput, "invoice_number">;
 
 type BillableLineItem = {
   id: string;
@@ -43,6 +45,8 @@ const invoiceInclude = {
   clients: true,
   invoice_line_items: { orderBy: { sort_order: "asc" } },
 } satisfies Prisma.invoicesInclude;
+
+const MAX_INVOICE_NUMBER_ATTEMPTS = 5;
 
 function addDays(date: Date, days: number) {
   const next = new Date(date);
@@ -344,7 +348,7 @@ function totalsFor(lines: InvoiceLineCreate[]) {
 
 async function existingDispatchInvoice(
   prisma: Db,
-  where: { shipmentId?: string; subShipmentId?: string },
+  where: DispatchInvoiceWhere,
 ) {
   return prisma.invoices.findFirst({
     where: {
@@ -354,6 +358,55 @@ async function existingDispatchInvoice(
       status: { not: "cancelled" as InvoiceStatus },
     },
     include: invoiceInclude,
+  });
+}
+
+function canStartTransaction(prisma: Db): prisma is PrismaClient {
+  return "$transaction" in prisma && typeof prisma.$transaction === "function";
+}
+
+async function withInvoiceCreationLock<T>(prisma: Db, invoiceDate: Date, callback: (tx: Db) => Promise<T>) {
+  const lockKey = `invoice-create:${invoiceMonthKey(invoiceDate)}`;
+  if (canStartTransaction(prisma)) {
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+      return callback(tx);
+    });
+  }
+
+  await prisma.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+  return callback(prisma);
+}
+
+function isInvoiceNumberCollision(err: unknown) {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
+  const target = err.meta?.target;
+  if (Array.isArray(target)) return target.includes("invoice_number");
+  return String(target ?? "").includes("invoice_number");
+}
+
+async function createDispatchInvoice(prisma: Db, where: DispatchInvoiceWhere, invoiceDate: Date, data: InvoiceCreateData) {
+  return withInvoiceCreationLock(prisma, invoiceDate, async (tx) => {
+    for (let attempt = 0; attempt < MAX_INVOICE_NUMBER_ATTEMPTS; attempt++) {
+      const existing = await existingDispatchInvoice(tx, where);
+      if (existing) return existing;
+
+      try {
+        return await tx.invoices.create({
+          data: {
+            ...data,
+            invoice_number: await generateInvoiceNumber(tx, invoiceDate),
+          },
+          include: invoiceInclude,
+        });
+      } catch (err) {
+        if (!isInvoiceNumberCollision(err)) throw err;
+      }
+    }
+
+    const existing = await existingDispatchInvoice(tx, where);
+    if (existing) return existing;
+    throw new ApiError("Could not generate a unique invoice number. Please try again.", 409);
   });
 }
 
@@ -411,22 +464,18 @@ export async function ensureShipmentDraftInvoice(prisma: Db, shipmentId: string,
   const totals = totalsFor(lines);
   const now = new Date();
 
-  return prisma.invoices.create({
-    data: {
-      client_id: shipment.client_id,
-      shipment_id: shipment.id,
-      sub_shipment_id: null,
-      invoice_number: await generateInvoiceNumber(prisma as PrismaClient, now),
-      invoice_date: now,
-      due_date: addDays(now, 14),
-      invoice_type: "shipment",
-      subtotal: totals.subtotal,
-      vat_amount: totals.vatAmount,
-      total: totals.total,
-      created_by: createdBy,
-      invoice_line_items: lines.length ? { create: lines } : undefined,
-    },
-    include: invoiceInclude,
+  return createDispatchInvoice(prisma, { shipmentId }, now, {
+    client_id: shipment.client_id,
+    shipment_id: shipment.id,
+    sub_shipment_id: null,
+    invoice_date: now,
+    due_date: addDays(now, 14),
+    invoice_type: "shipment",
+    subtotal: totals.subtotal,
+    vat_amount: totals.vatAmount,
+    total: totals.total,
+    created_by: createdBy,
+    invoice_line_items: lines.length ? { create: lines } : undefined,
   });
 }
 
@@ -488,21 +537,17 @@ export async function ensureSubShipmentDraftInvoice(prisma: Db, subShipmentId: s
   const totals = totalsFor(lines);
   const now = new Date();
 
-  return prisma.invoices.create({
-    data: {
-      client_id: subShipment.shipments.client_id,
-      shipment_id: subShipment.parent_shipment_id,
-      sub_shipment_id: subShipment.id,
-      invoice_number: await generateInvoiceNumber(prisma as PrismaClient, now),
-      invoice_date: now,
-      due_date: addDays(now, 14),
-      invoice_type: "sub_shipment",
-      subtotal: totals.subtotal,
-      vat_amount: totals.vatAmount,
-      total: totals.total,
-      created_by: createdBy,
-      invoice_line_items: lines.length ? { create: lines } : undefined,
-    },
-    include: invoiceInclude,
+  return createDispatchInvoice(prisma, { subShipmentId }, now, {
+    client_id: subShipment.shipments.client_id,
+    shipment_id: subShipment.parent_shipment_id,
+    sub_shipment_id: subShipment.id,
+    invoice_date: now,
+    due_date: addDays(now, 14),
+    invoice_type: "sub_shipment",
+    subtotal: totals.subtotal,
+    vat_amount: totals.vatAmount,
+    total: totals.total,
+    created_by: createdBy,
+    invoice_line_items: lines.length ? { create: lines } : undefined,
   });
 }
