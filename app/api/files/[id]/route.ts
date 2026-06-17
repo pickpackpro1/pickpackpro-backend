@@ -34,6 +34,12 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     if (record.file_type === "invoice_xlsx") {
       await prisma.invoices.updateMany({ where: { xlsx_file_id: record.id }, data: { xlsx_file_id: null } });
     }
+    if (record.file_type === "fnsku_label") {
+      await prisma.products.updateMany({
+        where: { default_fnsku_label_file_id: record.id },
+        data: { default_fnsku_label_file_id: null },
+      });
+    }
     await supabaseAdmin.storage.from(bucketFor(record.file_type)).remove([record.storage_path]);
     await prisma.uploaded_files.delete({ where: { id: params.id } });
     return success({ deleted: true });

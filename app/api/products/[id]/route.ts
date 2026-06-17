@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getLatestProductFnskuLabelsByProductId, withDefaultFnskuLabelFile } from "@/lib/productFnskuLabels";
+import { withDefaultFnskuLabelFile } from "@/lib/productFnskuLabels";
 import { json } from "@/lib/validation";
 
 const patchSchema = z
@@ -36,14 +36,16 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const user = await requireRole(req, ["admin", "client"]);
     const product = await prisma.products.findFirst({
       where: { id: params.id, soft_deleted_at: null },
-      include: { clients: true },
+      include: {
+        clients: true,
+        uploaded_files_products_default_fnsku_label_file_idTouploaded_files: true,
+      },
     });
     if (!product) throw new ApiError("Product not found", 404);
     if (user.role === "client" && product.client_id !== user.clientId) {
       throw new ApiError("Cannot access another client's product", 403);
     }
-    const labelsByProductId = await getLatestProductFnskuLabelsByProductId(prisma, [product.id]);
-    return success(withDefaultFnskuLabelFile(product, labelsByProductId.get(product.id)));
+    return success(withDefaultFnskuLabelFile(product, null));
   } catch (err) {
     return handleApiError(err);
   }
@@ -81,7 +83,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         bundle_size: body.needsBundling === false ? null : body.bundleSize,
         active: body.active,
       },
-      include: { clients: true },
+      include: {
+        clients: true,
+        uploaded_files_products_default_fnsku_label_file_idTouploaded_files: true,
+      },
     });
 
     await prisma.audit_logs.create({
@@ -97,8 +102,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       },
     });
 
-    const labelsByProductId = await getLatestProductFnskuLabelsByProductId(prisma, [product.id]);
-    return success(withDefaultFnskuLabelFile(product, labelsByProductId.get(product.id)));
+    return success(withDefaultFnskuLabelFile(product, null));
   } catch (err) {
     return handleApiError(err);
   }

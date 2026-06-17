@@ -249,8 +249,26 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
         ],
       },
     });
+    const productDefaultFileIds = relatedFiles.length
+      ? new Set(
+          (
+            await prisma.products.findMany({
+              where: {
+                default_fnsku_label_file_id: {
+                  in: relatedFiles.map((file) => file.id),
+                },
+              },
+              select: { default_fnsku_label_file_id: true },
+            })
+          )
+            .map((product) => product.default_fnsku_label_file_id)
+            .filter((id): id is string => Boolean(id)),
+        )
+      : new Set<string>();
     const deletableRelatedFiles = relatedFiles.filter(
-      (file) => file.linked_entity_type !== PRODUCT_FNSKU_LABEL_ENTITY_TYPE,
+      (file) =>
+        file.linked_entity_type !== PRODUCT_FNSKU_LABEL_ENTITY_TYPE &&
+        !productDefaultFileIds.has(file.id),
     );
     const relatedFileIds = [...new Set(deletableRelatedFiles.map((file) => file.id))];
 

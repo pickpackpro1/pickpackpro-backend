@@ -149,6 +149,9 @@ export async function POST(req: Request) {
     if (entityType === "shipment" && fileType === "fnsku_label") {
       throw new ApiError("FNSKU labels must be uploaded against a shipment line item", 422);
     }
+    if (entityType === "product" && fileType !== "fnsku_label") {
+      throw new ApiError("Product default FNSKU label uploads must use fileType fnsku_label", 422);
+    }
     const bucket = bucketFor(fileType);
     const path = `${entityType}/${entityId}/${fileType}/${Date.now()}-${file.name}`;
     const upload = await supabaseAdmin.storage.from(bucket).upload(path, file, { contentType: file.type, upsert: false });
@@ -172,6 +175,13 @@ export async function POST(req: Request) {
       await prisma.shipment_line_items.update({
         where: { id: entityId },
         data: { fnsku_label_file_id: record.id, updated_at: new Date() },
+      });
+    }
+
+    if (entityType === "product" && fileType === "fnsku_label") {
+      await prisma.products.update({
+        where: { id: entityId },
+        data: { default_fnsku_label_file_id: record.id },
       });
     }
 

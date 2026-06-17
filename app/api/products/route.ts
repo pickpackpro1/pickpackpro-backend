@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getLatestProductFnskuLabelsByProductId, withDefaultFnskuLabelFile } from "@/lib/productFnskuLabels";
+import { withDefaultFnskuLabelFile } from "@/lib/productFnskuLabels";
 import { json } from "@/lib/validation";
 
 const productSchema = z
@@ -53,6 +53,7 @@ export async function GET(req: Request) {
         sku: true,
         product_name: true,
         default_fnsku: true,
+        default_fnsku_label_file_id: true,
         length_cm: true,
         width_cm: true,
         height_cm: true,
@@ -66,16 +67,12 @@ export async function GET(req: Request) {
         created_at: true,
         client_id: true,
         clients: { select: { id: true, company_name: true } },
+        uploaded_files_products_default_fnsku_label_file_idTouploaded_files: true,
       },
       orderBy: { created_at: "desc" },
     });
 
-    const labelsByProductId = await getLatestProductFnskuLabelsByProductId(
-      prisma,
-      products.map((product) => product.id),
-    );
-
-    return success(products.map((product) => withDefaultFnskuLabelFile(product, labelsByProductId.get(product.id))));
+    return success(products.map((product) => withDefaultFnskuLabelFile(product, null)));
   } catch (err) {
     return handleApiError(err);
   }
@@ -108,7 +105,10 @@ export async function POST(req: Request) {
         bundle_size: body.needsBundling ? body.bundleSize ?? null : null,
         active: body.active,
       },
-      include: { clients: true },
+      include: {
+        clients: true,
+        uploaded_files_products_default_fnsku_label_file_idTouploaded_files: true,
+      },
     });
 
     await prisma.audit_logs.create({

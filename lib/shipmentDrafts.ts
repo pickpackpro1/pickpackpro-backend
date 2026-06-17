@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ApiError } from "@/lib/apiResponse";
-import { PRODUCT_FNSKU_LABEL_ENTITY_TYPE } from "@/lib/productFnskuLabels";
 
 const DEFAULT_SERVICES = ["FNSKU_LABEL", "POLY_BAG", "BUBBLE_WRAP", "BUNDLING"];
 
@@ -334,6 +333,16 @@ export async function attachDraftFnskuFiles(
       },
     });
 
+    await tx.products.updateMany({
+      where: {
+        id: created.productId,
+        default_fnsku_label_file_id: null,
+      },
+      data: {
+        default_fnsku_label_file_id: match.id,
+      },
+    });
+
     attachedFileIds.add(match.id);
     attachedLineItemIds.add(created.lineItemId);
   }
@@ -347,18 +356,20 @@ export async function attachDraftFnskuFiles(
   ];
   if (productIds.length === 0) return;
 
-  const productLabelFiles = await tx.uploaded_files.findMany({
+  const productsWithDefaultLabels = await tx.products.findMany({
     where: {
-      file_type: "fnsku_label",
-      linked_entity_type: PRODUCT_FNSKU_LABEL_ENTITY_TYPE,
-      linked_entity_id: { in: productIds },
+      id: { in: productIds },
+      default_fnsku_label_file_id: { not: null },
     },
-    orderBy: { uploaded_at: "desc" },
+    select: {
+      id: true,
+      default_fnsku_label_file_id: true,
+    },
   });
   const productLabelByProductId = new Map<string, string>();
-  for (const file of productLabelFiles) {
-    if (!file.linked_entity_id || productLabelByProductId.has(file.linked_entity_id)) continue;
-    productLabelByProductId.set(file.linked_entity_id, file.id);
+  for (const product of productsWithDefaultLabels) {
+    if (!product.default_fnsku_label_file_id) continue;
+    productLabelByProductId.set(product.id, product.default_fnsku_label_file_id);
   }
 
   for (const created of createdLineItems) {

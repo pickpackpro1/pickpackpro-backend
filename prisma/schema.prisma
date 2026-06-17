@@ -182,29 +182,32 @@ model outbound_boxes {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model products {
-  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  client_id           String                @db.Uuid
-  product_name        String
-  sku                 String
-  default_fnsku       String?
-  length_cm           Decimal               @db.Decimal
-  width_cm            Decimal               @db.Decimal
-  height_cm           Decimal               @db.Decimal
-  weight_kg           Decimal               @db.Decimal
-  hazmat_flag         Boolean               @default(false)
-  expiry_tracked      Boolean               @default(false)
-  lot_tracked         Boolean               @default(false)
-  needs_bundling      Boolean               @default(false)
-  bundle_size         Int?
-  image_path          String?
-  active              Boolean               @default(true)
-  created_at          DateTime              @default(now()) @db.Timestamptz(6)
-  soft_deleted_at     DateTime?             @db.Timestamptz(6)
-  clients             clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  shipment_line_items shipment_line_items[]
+  id                                                            String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  client_id                                                     String                @db.Uuid
+  product_name                                                  String
+  sku                                                           String
+  default_fnsku                                                 String?
+  default_fnsku_label_file_id                                   String?               @db.Uuid
+  length_cm                                                     Decimal               @db.Decimal
+  width_cm                                                      Decimal               @db.Decimal
+  height_cm                                                     Decimal               @db.Decimal
+  weight_kg                                                     Decimal               @db.Decimal
+  hazmat_flag                                                   Boolean               @default(false)
+  expiry_tracked                                                Boolean               @default(false)
+  lot_tracked                                                   Boolean               @default(false)
+  needs_bundling                                                Boolean               @default(false)
+  bundle_size                                                   Int?
+  image_path                                                    String?
+  active                                                        Boolean               @default(true)
+  created_at                                                    DateTime              @default(now()) @db.Timestamptz(6)
+  soft_deleted_at                                               DateTime?             @db.Timestamptz(6)
+  clients                                                       clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  uploaded_files_products_default_fnsku_label_file_idTouploaded_files uploaded_files? @relation("products_default_fnsku_label_file_idTouploaded_files", fields: [default_fnsku_label_file_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "products_default_fnsku_label_file_fkey")
+  shipment_line_items                                           shipment_line_items[]
 
   @@unique([client_id, sku])
   @@index([client_id], map: "idx_products_client_id")
+  @@index([default_fnsku_label_file_id], map: "idx_products_default_fnsku_label_file")
 }
 
 model service_catalog {
@@ -360,6 +363,7 @@ model uploaded_files {
   invoices_invoices_pdf_file_idTouploaded_files  invoices[]            @relation("invoices_pdf_file_idTouploaded_files")
   invoices_invoices_xlsx_file_idTouploaded_files invoices[]            @relation("invoices_xlsx_file_idTouploaded_files")
   outbound_boxes                                 outbound_boxes[]
+  products_products_default_fnsku_label_file_idTouploaded_files products[] @relation("products_default_fnsku_label_file_idTouploaded_files")
   shipment_line_items                            shipment_line_items[]
   clients                                        clients               @relation(fields: [client_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 

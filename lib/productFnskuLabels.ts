@@ -4,6 +4,14 @@ import { serializeUploadedFile } from "@/lib/shipmentContract";
 type Db = PrismaClient | Prisma.TransactionClient;
 
 export const PRODUCT_FNSKU_LABEL_ENTITY_TYPE = "product";
+export const PRODUCT_DEFAULT_FNSKU_LABEL_RELATION =
+  "uploaded_files_products_default_fnsku_label_file_idTouploaded_files";
+
+type ProductWithDefaultFnskuLabel = {
+  id: string;
+  default_fnsku_label_file_id?: string | null;
+  uploaded_files_products_default_fnsku_label_file_idTouploaded_files?: unknown;
+};
 
 export async function getLatestProductFnskuLabelsByProductId(prisma: Db, productIds: string[]) {
   const uniqueProductIds = [...new Set(productIds)].filter(Boolean);
@@ -31,12 +39,18 @@ export function withDefaultFnskuLabelFile<T extends { id: string }>(
   product: T,
   labelFile: ReturnType<typeof serializeUploadedFile> | undefined | null,
 ) {
-  const labelFileId = labelFile?.fileId ?? null;
+  const productWithLabel = product as T & ProductWithDefaultFnskuLabel;
+  const resolvedLabelFile =
+    labelFile ??
+    serializeUploadedFile(
+      productWithLabel.uploaded_files_products_default_fnsku_label_file_idTouploaded_files,
+    );
+  const labelFileId = productWithLabel.default_fnsku_label_file_id ?? resolvedLabelFile?.fileId ?? null;
   return {
     ...product,
     defaultFnskuLabelFileId: labelFileId,
     default_fnsku_label_file_id: labelFileId,
-    defaultFnskuLabelFile: labelFile ?? null,
-    default_fnsku_label_file: labelFile ?? null,
+    defaultFnskuLabelFile: resolvedLabelFile ?? null,
+    default_fnsku_label_file: resolvedLabelFile ?? null,
   };
 }
