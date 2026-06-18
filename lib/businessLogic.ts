@@ -120,6 +120,40 @@ export async function assertTransition(
   if (!result.valid) throw new ApiError(result.reason ?? "Invalid status transition", 422);
 }
 
+function boxContentShipmentItemId(entry: {
+  shipmentItemId?: string;
+  shipment_item_id?: string;
+  shipmentLineItemId?: string;
+  shipment_line_item_id?: string;
+  lineItemId?: string;
+  line_item_id?: string;
+  itemId?: string;
+  item_id?: string;
+}) {
+  return (
+    entry.shipmentItemId ??
+    entry.shipment_item_id ??
+    entry.shipmentLineItemId ??
+    entry.shipment_line_item_id ??
+    entry.lineItemId ??
+    entry.line_item_id ??
+    entry.itemId ??
+    entry.item_id
+  );
+}
+
+function boxContentQuantity(entry: {
+  quantity?: number;
+  qty?: number;
+  units?: number;
+  qtyPacked?: number;
+  qty_packed?: number;
+}) {
+  const value = entry.quantity ?? entry.qty ?? entry.units ?? entry.qtyPacked ?? entry.qty_packed ?? 0;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
 export async function validateBoxAllocation(
   prisma: PrismaClient | Prisma.TransactionClient,
   shipmentItemId: string,
@@ -168,12 +202,26 @@ export async function validateBoxAllocation(
 
   const boxes = await prisma.outbound_boxes.findMany({ where: boxesWhere });
   const allocated = boxes.reduce((sum, current) => {
-    const contents = current.contents as Array<{ shipmentItemId?: string; shipment_line_item_id?: string; quantity?: number }> | null;
+    const contents = current.contents as Array<{
+      shipmentItemId?: string;
+      shipment_item_id?: string;
+      shipmentLineItemId?: string;
+      shipment_line_item_id?: string;
+      lineItemId?: string;
+      line_item_id?: string;
+      itemId?: string;
+      item_id?: string;
+      quantity?: number;
+      qty?: number;
+      units?: number;
+      qtyPacked?: number;
+      qty_packed?: number;
+    }> | null;
     return (
       sum +
       (contents ?? [])
-        .filter((entry) => entry.shipmentItemId === shipmentItemId || entry.shipment_line_item_id === shipmentItemId)
-        .reduce((inner, entry) => inner + (entry.quantity ?? 0), 0)
+        .filter((entry) => boxContentShipmentItemId(entry) === shipmentItemId)
+        .reduce((inner, entry) => inner + boxContentQuantity(entry), 0)
     );
   }, 0);
   if (allocated + quantityToAdd > maxAllocatable) {

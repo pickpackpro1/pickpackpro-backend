@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
+import { buildValidatedBoxContents, extractBoxAllocationInputs } from "@/lib/boxAllocations";
 import { getSubShipmentBoxesWorkflowState } from "@/lib/boxWorkflowState";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
@@ -10,6 +11,10 @@ const schema = z.object({
   dimensions: z.object({ l: z.number().nonnegative(), w: z.number().nonnegative(), h: z.number().nonnegative() }).optional(),
   boxType: z.enum(["box", "pallet"]).default("box"),
   boxSize: z.enum(["small", "medium", "large", "oversize"]).optional(),
+  items: z.array(z.unknown()).optional(),
+  boxItems: z.array(z.unknown()).optional(),
+  box_items: z.array(z.unknown()).optional(),
+  contents: z.array(z.unknown()).optional(),
 });
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
@@ -83,6 +88,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         throw new ApiError("Cannot add boxes to this sub-shipment", 422);
       }
       const count = await tx.outbound_boxes.count({ where: { shipment_id: subShipment.parent_shipment_id } });
+      const contents = await buildValidatedBoxContents(tx, {
+        shipmentId: subShipment.parent_shipment_id,
+        subShipmentId: subShipment.id,
+        rows: extractBoxAllocationInputs(body),
+      });
       const created = await tx.outbound_boxes.create({
         data: {
           shipment_id: subShipment.parent_shipment_id,
@@ -94,7 +104,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           width_cm: body.dimensions?.w ?? 0,
           height_cm: body.dimensions?.h ?? 0,
           weight_kg: body.weight ?? 0,
-          contents: [],
+          contents,
         },
       });
       if (subShipment.status === "draft") {
