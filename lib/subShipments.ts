@@ -18,6 +18,22 @@ type SubShipmentLineInput = {
   quantity: number;
 };
 
+type BoxContentEntry = {
+  shipmentItemId?: string;
+  shipment_item_id?: string;
+  shipmentLineItemId?: string;
+  shipment_line_item_id?: string;
+  lineItemId?: string;
+  line_item_id?: string;
+  itemId?: string;
+  item_id?: string;
+  quantity?: number | string | null;
+  qty?: number | string | null;
+  units?: number | string | null;
+  qtyPacked?: number | string | null;
+  qty_packed?: number | string | null;
+};
+
 const activeSubShipmentStatuses: SubShipmentStatus[] = [
   "draft",
   "awaiting_fba_labels",
@@ -32,8 +48,37 @@ export function isLineItemPrepared(item: LineForPrep) {
   return (selected ?? []).every((service) => statuses?.[service] === "DONE" || statuses?.[service] === "done");
 }
 
+function boxContents(contents: Prisma.JsonValue): BoxContentEntry[] {
+  return Array.isArray(contents) ? (contents.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry)) as BoxContentEntry[]) : [];
+}
+
+function contentShipmentItemId(entry: BoxContentEntry) {
+  return String(
+    entry.shipmentItemId ??
+      entry.shipment_item_id ??
+      entry.shipmentLineItemId ??
+      entry.shipment_line_item_id ??
+      entry.lineItemId ??
+      entry.line_item_id ??
+      entry.itemId ??
+      entry.item_id ??
+      "",
+  ).trim();
+}
+
+function contentQuantity(entry: BoxContentEntry) {
+  const value = entry.quantity ?? entry.qty ?? entry.units ?? entry.qtyPacked ?? entry.qty_packed ?? 0;
+  const quantity = Number(value);
+  return Number.isFinite(quantity) ? quantity : 0;
+}
+
+function addQuantity(map: Map<string, number>, shipmentItemId: string, quantity: number) {
+  if (!shipmentItemId || quantity <= 0) return;
+  map.set(shipmentItemId, (map.get(shipmentItemId) ?? 0) + quantity);
+}
+
 export async function getSubShipmentAvailability(prisma: Db, shipmentId: string) {
-  const [items, subItems] = await Promise.all([
+  const [items, subItems, parentBoxes] = await Promise.all([
     prisma.shipment_line_items.findMany({
       where: { shipment_id: shipmentId },
       include: { products: true },
@@ -47,20 +92,33 @@ export async function getSubShipmentAvailability(prisma: Db, shipmentId: string)
         },
       },
     }),
+    prisma.outbound_boxes.findMany({
+      where: {
+        shipment_id: shipmentId,
+        sub_shipment_id: null,
+        box_type: "box",
+      },
+      select: { contents: true },
+    }),
   ]);
 
   const assignedByItem = new Map<string, number>();
   for (const subItem of subItems) {
-    assignedByItem.set(
-      subItem.shipment_line_item_id,
-      (assignedByItem.get(subItem.shipment_line_item_id) ?? 0) + subItem.quantity,
-    );
+    addQuantity(assignedByItem, subItem.shipment_line_item_id, subItem.quantity);
+  }
+
+  const packedInParentBoxesByItem = new Map<string, number>();
+  for (const box of parentBoxes) {
+    for (const content of boxContents(box.contents)) {
+      addQuantity(packedInParentBoxesByItem, contentShipmentItemId(content), contentQuantity(content));
+    }
   }
 
   return items.map((item) => {
     const receivedQty = item.qty_received ?? 0;
     const assignedQty = assignedByItem.get(item.id) ?? 0;
-    const remainingQty = Math.max(receivedQty - assignedQty, 0);
+    const packedInParentBoxes = packedInParentBoxesByItem.get(item.id) ?? 0;
+    const remainingQty = Math.max(receivedQty - assignedQty - packedInParentBoxes, 0);
     const prepared = isLineItemPrepared(item);
     return {
       shipmentItemId: item.id,
@@ -70,9 +128,13 @@ export async function getSubShipmentAvailability(prisma: Db, shipmentId: string)
       receivedQty,
       dispatchQty: item.dispatch_qty ?? receivedQty,
       assignedQty,
+      packedInParentBoxes,
+      packed_in_parent_boxes: packedInParentBoxes,
       remainingQty,
+      remaining_qty: remainingQty,
       prepared,
       availableQty: prepared ? remainingQty : 0,
+      available_qty: prepared ? remainingQty : 0,
     };
   });
 }
