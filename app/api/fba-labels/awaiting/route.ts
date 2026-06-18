@@ -38,6 +38,15 @@ function numberValue(value: unknown) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function boxScope(box: JsonRecord) {
+  return box.sub_shipment_id ? "sub_shipment" : "parent_shipment";
+}
+
+function boxPalletNumber(box: JsonRecord) {
+  const value = firstPresent(box.pallet_number, box.palletNumber);
+  return value === undefined || value === null ? null : String(value);
+}
+
 function jsonArray(value: Prisma.JsonValue | null | undefined): JsonRecord[] {
   return Array.isArray(value) ? (value as JsonRecord[]) : [];
 }
@@ -259,6 +268,7 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
       lineItems,
     );
     const childContents = contentsForBox(childBox.contents, lineItemsById, childFallbackItems);
+    const childSubShipment = childBox.sub_shipments ?? box.sub_shipments ?? null;
 
     return {
       id: childBox.id,
@@ -266,12 +276,19 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
       box_id: childBox.id,
       boxNumber: childBox.box_number,
       box_number: childBox.box_number,
+      palletNumber: boxPalletNumber(childBox),
+      pallet_number: boxPalletNumber(childBox),
+      parentPalletNumber: boxPalletNumber(box),
+      parent_pallet_number: boxPalletNumber(box),
       boxType: childBox.box_type,
       box_type: childBox.box_type,
       shipmentId: childBox.shipment_id,
       shipment_id: childBox.shipment_id,
       subShipmentId: childBox.sub_shipment_id,
       sub_shipment_id: childBox.sub_shipment_id,
+      subShipmentReference: childSubShipment?.reference ?? null,
+      sub_shipment_reference: childSubShipment?.reference ?? null,
+      scope: boxScope(childBox),
       palletId: childBox.pallet_id,
       pallet_id: childBox.pallet_id,
       insidePallet: true,
@@ -308,6 +325,8 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
     box_id: box.id,
     boxNumber: box.box_number,
     box_number: box.box_number,
+    palletNumber: boxPalletNumber(box),
+    pallet_number: boxPalletNumber(box),
     boxType: box.box_type,
     box_type: box.box_type,
     size: box.box_size,
@@ -336,6 +355,7 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
     sub_shipment_id: box.sub_shipment_id,
     subShipmentReference: box.sub_shipments?.reference ?? null,
     sub_shipment_reference: box.sub_shipments?.reference ?? null,
+    scope: boxScope(box),
     palletId: box.pallet_id,
     pallet_id: box.pallet_id,
     insidePallet: Boolean(box.pallet_id),
@@ -449,6 +469,7 @@ export async function GET(req: Request) {
               sub_shipment_id: true,
               pallet_id: true,
               box_number: true,
+              pallet_number: true,
               box_type: true,
               box_size: true,
               length_cm: true,
@@ -480,12 +501,16 @@ export async function GET(req: Request) {
                   sub_shipment_id: true,
                   pallet_id: true,
                   box_number: true,
+                  pallet_number: true,
                   box_type: true,
                   contents: true,
                   fba_shipping_label_file_id: true,
                   label_uploaded_at: true,
                   dispatched_at: true,
                   uploaded_files: true,
+                  sub_shipments: {
+                    select: { id: true, reference: true, status: true, sequence_no: true },
+                  },
                 },
                 orderBy: { box_number: "asc" },
               },

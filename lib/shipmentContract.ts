@@ -12,9 +12,13 @@ export const shipmentContractInclude = {
   outbound_boxes: {
     include: {
       uploaded_files: true,
-      pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+      pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+      sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
       pallet_children: {
-        include: { uploaded_files: true },
+        include: {
+          uploaded_files: true,
+          sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+        },
         orderBy: { box_number: "asc" },
       },
     },
@@ -33,9 +37,13 @@ export const shipmentContractInclude = {
       outbound_boxes: {
         include: {
           uploaded_files: true,
-          pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+          pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+          sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
           pallet_children: {
-            include: { uploaded_files: true },
+            include: {
+              uploaded_files: true,
+              sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+            },
             orderBy: { box_number: "asc" },
           },
         },
@@ -190,14 +198,33 @@ function sortLineItems(items: ShipmentContractPayload["shipment_line_items"]) {
   });
 }
 
-function serializeOutboundBox(box: Record<string, any>): Record<string, any> {
+function boxScope(box: Record<string, any>) {
+  return box.sub_shipment_id ? "sub_shipment" : "parent_shipment";
+}
+
+function serializeOutboundBox(box: Record<string, any>, context: { subShipmentReference?: string | null } = {}): Record<string, any> {
   const labelFile = serializeUploadedFile(box.uploaded_files);
-  const palletChildren = (box.pallet_children ?? []).map((child: Record<string, any>) => serializeOutboundBox(child));
+  const subShipmentReference = box.sub_shipments?.reference ?? context.subShipmentReference ?? null;
+  const palletChildren = (box.pallet_children ?? []).map((child: Record<string, any>) =>
+    serializeOutboundBox(child, { subShipmentReference }),
+  );
   const isPallet = box.box_type === "pallet";
   const insidePallet = Boolean(box.pallet_id);
   const canDispatchDirectly = !insidePallet && (isPallet || Boolean(box.fba_shipping_label_file_id));
+  const palletNumber = box.pallet_number ?? null;
   return {
     ...box,
+    boxNumber: box.box_number,
+    box_number: box.box_number,
+    palletNumber,
+    pallet_number: palletNumber,
+    parentPalletNumber: box.pallet?.pallet_number ?? null,
+    parent_pallet_number: box.pallet?.pallet_number ?? null,
+    subShipmentId: box.sub_shipment_id,
+    sub_shipment_id: box.sub_shipment_id,
+    subShipmentReference,
+    sub_shipment_reference: subShipmentReference,
+    scope: boxScope(box),
     palletId: box.pallet_id,
     pallet_id: box.pallet_id,
     parentPallet: box.pallet ?? null,
@@ -223,7 +250,9 @@ function serializeOutboundBox(box: Record<string, any>): Record<string, any> {
 }
 
 function serializeSubShipment(subShipment: Record<string, any>) {
-  const boxes: Record<string, any>[] = (subShipment.outbound_boxes ?? []).map(serializeOutboundBox);
+  const boxes: Record<string, any>[] = (subShipment.outbound_boxes ?? []).map((box: Record<string, any>) =>
+    serializeOutboundBox(box, { subShipmentReference: subShipment.reference }),
+  );
   const dispatchableBoxes = boxes.filter((box) => !box.pallet_id);
   return {
     ...subShipment,
@@ -258,7 +287,7 @@ function serializeSubShipment(subShipment: Record<string, any>) {
 
 export function serializeShipment(shipment: ShipmentContractPayload) {
   const lineItems = sortLineItems(shipment.shipment_line_items).map(serializeLineItem);
-  const boxes: Record<string, any>[] = (shipment.outbound_boxes ?? []).map(serializeOutboundBox);
+  const boxes: Record<string, any>[] = (shipment.outbound_boxes ?? []).map((box) => serializeOutboundBox(box));
   const dispatchableBoxes = boxes.filter((box) => !box.pallet_id);
   const subShipments = (shipment.sub_shipments ?? []).map(serializeSubShipment);
   const discrepancies = lineItems.filter((item) => item.qty_discrepancy_flag);

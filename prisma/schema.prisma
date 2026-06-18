@@ -158,6 +158,7 @@ model outbound_boxes {
   sub_shipment_id            String?         @db.Uuid
   pallet_id                  String?         @db.Uuid
   box_number                 Int
+  pallet_number              String?
   box_type                   BoxType
   box_size                   BoxSize?
   length_cm                  Decimal         @db.Decimal

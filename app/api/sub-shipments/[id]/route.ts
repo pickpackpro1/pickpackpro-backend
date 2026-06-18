@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
-import { areDispatchableBoxesDispatched } from "@/lib/pallets";
+import { areDispatchableBoxesDispatched, serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { refreshParentShipmentDispatchStatus } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -31,8 +31,15 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         outbound_boxes: {
           include: {
             uploaded_files: true,
-            pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
-            pallet_children: { include: { uploaded_files: true }, orderBy: { box_number: "asc" } },
+            pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+            sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+            pallet_children: {
+              include: {
+                uploaded_files: true,
+                sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+              },
+              orderBy: { box_number: "asc" },
+            },
           },
           orderBy: { box_number: "asc" },
         },
@@ -40,7 +47,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     });
     if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
     if (user.role === "client") await requireClientAccess(req, subShipment.shipments.client_id);
-    return success(subShipment);
+    const boxes = subShipment.outbound_boxes.map((box) =>
+      serializeBoxOwnership(box, { subShipmentReference: subShipment.reference }),
+    );
+    return success({ ...subShipment, outbound_boxes: boxes, boxes });
   } catch (err) {
     return handleApiError(err);
   }

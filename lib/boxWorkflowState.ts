@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { ApiError } from "./apiResponse";
+import { serializeBoxOwnership } from "./pallets";
 import { getSubShipmentAvailability } from "./subShipments";
 
 type Db = Prisma.TransactionClient;
@@ -31,6 +32,7 @@ const childBoxSelect = {
   sub_shipment_id: true,
   pallet_id: true,
   box_number: true,
+  pallet_number: true,
   box_type: true,
   box_size: true,
   length_cm: true,
@@ -43,11 +45,12 @@ const childBoxSelect = {
   dispatched_at: true,
   created_at: true,
   uploaded_files: { select: uploadedFileSelect },
+  sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
 };
 
 const workflowBoxSelect = {
   ...childBoxSelect,
-  pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
+  pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
   pallet_children: {
     select: childBoxSelect,
     orderBy: { box_number: "asc" as const },
@@ -118,7 +121,7 @@ export async function getShipmentBoxesWorkflowState(prisma: Db, shipmentId: stri
   });
 
   return {
-    boxes: shipment.outbound_boxes,
+    boxes: shipment.outbound_boxes.map((box) => serializeBoxOwnership(box)),
     allocationSummary,
     availability,
   };
@@ -172,7 +175,9 @@ export async function getSubShipmentBoxesWorkflowState(prisma: Db, subShipmentId
       updatedAt: subShipment.updated_at,
       updated_at: subShipment.updated_at,
     },
-    boxes: subShipment.outbound_boxes,
+    boxes: subShipment.outbound_boxes.map((box) =>
+      serializeBoxOwnership(box, { subShipmentReference: box.sub_shipments?.reference ?? null }),
+    ),
     allocationSummary,
   };
 }

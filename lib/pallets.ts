@@ -21,6 +21,8 @@ type PalletChildBox = {
   dispatched_at: Date | null;
 };
 
+type PalletRecord = Record<string, any>;
+
 export function getDispatchableBoxes<T extends BoxLike>(boxes: T[]) {
   return boxes.filter((box) => box.pallet_id === null);
 }
@@ -44,6 +46,54 @@ function uniqueValues<T>(values: T[]) {
 
 export function normalizeBoxIds(boxIds: string[]) {
   return uniqueValues(boxIds.map((boxId) => String(boxId || "").trim()).filter(Boolean));
+}
+
+export function normalizePalletNumber(value: unknown) {
+  const palletNumber = String(value ?? "").trim();
+  return palletNumber || null;
+}
+
+function ownershipScope(record: { sub_shipment_id?: string | null }) {
+  return record.sub_shipment_id ? "sub_shipment" : "parent_shipment";
+}
+
+export function serializeBoxOwnership<T extends PalletRecord>(
+  box: T,
+  context: { subShipmentReference?: string | null; parentPalletNumber?: string | null } = {},
+): PalletRecord {
+  const palletNumber = box.pallet_number ?? null;
+  const subShipmentReference = box.sub_shipments?.reference ?? context.subShipmentReference ?? null;
+  const childBoxes: PalletRecord[] = Array.isArray(box.pallet_children)
+    ? box.pallet_children.map((child: PalletRecord) =>
+        serializeBoxOwnership(child, {
+          subShipmentReference,
+          parentPalletNumber: palletNumber,
+        }),
+      )
+    : [];
+
+  return {
+    ...box,
+    boxNumber: box.box_number,
+    box_number: box.box_number,
+    palletNumber,
+    pallet_number: palletNumber,
+    parentPalletNumber: context.parentPalletNumber ?? box.pallet?.pallet_number ?? null,
+    parent_pallet_number: context.parentPalletNumber ?? box.pallet?.pallet_number ?? null,
+    subShipmentId: box.sub_shipment_id,
+    sub_shipment_id: box.sub_shipment_id,
+    subShipmentReference: subShipmentReference,
+    sub_shipment_reference: subShipmentReference,
+    scope: ownershipScope(box),
+    childBoxes,
+    child_boxes: childBoxes,
+    palletChildren: childBoxes,
+    pallet_children: childBoxes,
+  };
+}
+
+export function serializePalletResponse<T extends PalletRecord>(pallet: T) {
+  return serializeBoxOwnership(pallet);
 }
 
 export async function validatePalletChildBoxes(
@@ -115,6 +165,7 @@ export async function createPalletWithBoxes(
     shipmentId: string;
     boxIds: string[];
     subShipmentId?: string | null;
+    palletNumber?: string | null;
     dimensions?: { l?: number; w?: number; h?: number } | null;
     weight?: number | null;
   },
@@ -129,12 +180,32 @@ export async function createPalletWithBoxes(
   }
 
   const validated = await validatePalletChildBoxes(prisma, input.shipmentId, input.boxIds, input.subShipmentId);
+  const palletNumber = normalizePalletNumber(input.palletNumber);
+  if (palletNumber) {
+    const duplicate = await prisma.outbound_boxes.findFirst({
+      where: {
+        shipment_id: input.shipmentId,
+        sub_shipment_id: validated.subShipmentId,
+        box_type: "pallet",
+        pallet_number: { equals: palletNumber, mode: "insensitive" },
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      throw new ApiError("Pallet number already exists for this shipment scope", 422, {
+        palletNumber,
+        shipmentId: input.shipmentId,
+        subShipmentId: validated.subShipmentId,
+      });
+    }
+  }
   const count = await prisma.outbound_boxes.count({ where: { shipment_id: input.shipmentId } });
   const pallet = await prisma.outbound_boxes.create({
     data: {
       shipment_id: input.shipmentId,
       sub_shipment_id: validated.subShipmentId,
       box_number: count + 1,
+      pallet_number: palletNumber,
       box_type: "pallet",
       box_size: null,
       length_cm: input.dimensions?.l ?? 0,
@@ -154,7 +225,14 @@ export async function createPalletWithBoxes(
     where: { id: pallet.id },
     include: {
       uploaded_files: true,
-      pallet_children: { include: { uploaded_files: true }, orderBy: { box_number: "asc" } },
+      sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+      pallet_children: {
+        include: {
+          uploaded_files: true,
+          sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+        },
+        orderBy: { box_number: "asc" },
+      },
     },
   });
 }

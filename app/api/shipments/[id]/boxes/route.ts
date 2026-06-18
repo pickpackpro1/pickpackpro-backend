@@ -3,6 +3,7 @@ import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { buildValidatedBoxContents, extractBoxAllocationInputs } from "@/lib/boxAllocations";
 import { getShipmentBoxesWorkflowState, getSubShipmentBoxesWorkflowState } from "@/lib/boxWorkflowState";
+import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { getSubShipmentAvailability } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -28,8 +29,15 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         outbound_boxes: {
           include: {
             uploaded_files: true,
-            pallet: { select: { id: true, box_number: true, box_type: true, dispatched_at: true } },
-            pallet_children: { include: { uploaded_files: true }, orderBy: { box_number: "asc" } },
+            pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+            sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+            pallet_children: {
+              include: {
+                uploaded_files: true,
+                sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+              },
+              orderBy: { box_number: "asc" },
+            },
           },
           orderBy: { box_number: "asc" },
         },
@@ -61,7 +69,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         prepared: available?.prepared ?? false,
       };
     });
-    return success({ boxes: shipment.outbound_boxes, allocationSummary, availability });
+    return success({ boxes: shipment.outbound_boxes.map((box) => serializeBoxOwnership(box)), allocationSummary, availability });
   } catch (err) {
     return handleApiError(err);
   }

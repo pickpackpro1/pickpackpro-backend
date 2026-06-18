@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
-import { createPalletWithBoxes } from "@/lib/pallets";
+import { createPalletWithBoxes, serializePalletResponse } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -10,6 +10,8 @@ const schema = z.object({
   boxIds: z.array(z.string().uuid()).optional(),
   childBoxIds: z.array(z.string().uuid()).optional(),
   selectedBoxIds: z.array(z.string().uuid()).optional(),
+  palletNumber: z.string().optional().nullable(),
+  pallet_number: z.string().optional().nullable(),
   weight: z.coerce.number().nonnegative().optional(),
   dimensions: z
     .object({
@@ -38,6 +40,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       const created = await createPalletWithBoxes(tx, {
         shipmentId: subShipment.parent_shipment_id,
         subShipmentId: subShipment.id,
+        palletNumber: body.palletNumber ?? body.pallet_number,
         boxIds: requestedBoxIds(body),
         dimensions: body.dimensions,
         weight: body.weight,
@@ -57,7 +60,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return created;
     });
 
-    return success(pallet, 201);
+    return success(serializePalletResponse(pallet), 201);
   } catch (err) {
     return handleApiError(err);
   }

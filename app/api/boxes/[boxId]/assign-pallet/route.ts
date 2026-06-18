@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
-import { attachBoxesToPallet } from "@/lib/pallets";
+import { attachBoxesToPallet, serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -19,10 +19,14 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
       }
       return tx.outbound_boxes.findUniqueOrThrow({
         where: { id: params.boxId },
-        include: { pallet: true, uploaded_files: true },
+        include: {
+          pallet: true,
+          uploaded_files: true,
+          sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+        },
       });
     });
-    return success(box);
+    return success(serializeBoxOwnership(box));
   } catch (err) {
     return handleApiError(err);
   }

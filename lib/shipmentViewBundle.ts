@@ -230,6 +230,15 @@ function dimensions(box: JsonRecord) {
   };
 }
 
+function boxScope(box: JsonRecord) {
+  return box.sub_shipment_id ? "sub_shipment" : "parent_shipment";
+}
+
+function boxPalletNumber(box: JsonRecord) {
+  const value = firstPresent(box.pallet_number, box.palletNumber);
+  return value === undefined || value === null ? null : String(value);
+}
+
 function labelStatusForBox(box: JsonRecord, labelFile: SerializedFile | null) {
   if (box.fba_shipping_label_file_id || labelFile) return "uploaded";
   return box.box_type === BoxType.pallet ? "missing_optional" : "missing";
@@ -243,6 +252,8 @@ function serializeChildBox(
   const labelFile = fileForEntity(fileIndex, ["box", "outbound_box"], box.id, "fba_shipping_label", box.fba_shipping_label_file_id);
   const contents = serializeBoxContents(box.contents, lineItemsById);
   const labelStatus = labelStatusForBox(box, labelFile);
+  const subShipment = box.sub_shipments ?? null;
+  const parentPalletNumber = boxPalletNumber(box.pallet ?? {});
 
   return {
     id: box.id,
@@ -250,6 +261,10 @@ function serializeChildBox(
     box_id: box.id,
     boxNumber: box.box_number,
     box_number: box.box_number,
+    palletNumber: boxPalletNumber(box),
+    pallet_number: boxPalletNumber(box),
+    parentPalletNumber,
+    parent_pallet_number: parentPalletNumber,
     boxType: box.box_type,
     box_type: box.box_type,
     size: box.box_size,
@@ -270,6 +285,9 @@ function serializeChildBox(
     shipment_id: box.shipment_id,
     subShipmentId: box.sub_shipment_id,
     sub_shipment_id: box.sub_shipment_id,
+    subShipmentReference: subShipment?.reference ?? null,
+    sub_shipment_reference: subShipment?.reference ?? null,
+    scope: boxScope(box),
     palletId: box.pallet_id,
     pallet_id: box.pallet_id,
     insidePallet: Boolean(box.pallet_id),
@@ -319,6 +337,7 @@ function serializeBox(
     : serializeBoxContents(box.contents, lineItemsById);
   const labelStatus = labelStatusForBox(box, labelFile);
   const subShipment = box.sub_shipments ?? null;
+  const palletNumber = boxPalletNumber(box);
 
   return {
     id: box.id,
@@ -326,7 +345,9 @@ function serializeBox(
     box_id: box.id,
     boxNumber: box.box_number,
     box_number: box.box_number,
-    title: isPallet ? `Pallet ${box.box_number}` : `Box ${box.box_number}`,
+    palletNumber,
+    pallet_number: palletNumber,
+    title: isPallet ? (palletNumber || `Pallet ${box.box_number}`) : `Box ${box.box_number}`,
     boxType: box.box_type,
     box_type: box.box_type,
     size: box.box_size,
@@ -349,6 +370,7 @@ function serializeBox(
     sub_shipment_id: box.sub_shipment_id,
     subShipmentReference: subShipment?.reference ?? null,
     sub_shipment_reference: subShipment?.reference ?? null,
+    scope: boxScope(box),
     palletId: box.pallet_id,
     pallet_id: box.pallet_id,
     insidePallet: Boolean(box.pallet_id),
@@ -847,6 +869,7 @@ export async function getShipmentViewBundle(
             sub_shipment_id: true,
             pallet_id: true,
             box_number: true,
+            pallet_number: true,
             box_type: true,
             box_size: true,
             length_cm: true,
@@ -860,7 +883,7 @@ export async function getShipmentViewBundle(
             created_at: true,
             uploaded_files: true,
             pallet: {
-              select: { id: true, box_number: true, box_type: true, dispatched_at: true },
+              select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true },
             },
             sub_shipments: {
               select: { id: true, reference: true, status: true, sequence_no: true },

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
+import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
 import { assertSubShipmentItemsAvailable, getSubShipmentAvailability } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
@@ -40,7 +41,18 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
               },
             },
             outbound_boxes: {
-              include: { uploaded_files: true },
+              include: {
+                uploaded_files: true,
+                pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+                sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+                pallet_children: {
+                  include: {
+                    uploaded_files: true,
+                    sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
+                  },
+                  orderBy: { box_number: "asc" },
+                },
+              },
               orderBy: { box_number: "asc" },
             },
           },
@@ -51,7 +63,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     if (user.role === "client") await requireClientAccess(req, shipment.client_id);
 
     const availability = await getSubShipmentAvailability(prisma, params.id);
-    return success({ subShipments: shipment.sub_shipments, availability });
+    const subShipments = shipment.sub_shipments.map((subShipment) => {
+      const boxes = subShipment.outbound_boxes.map((box) =>
+        serializeBoxOwnership(box, { subShipmentReference: subShipment.reference }),
+      );
+      return { ...subShipment, outbound_boxes: boxes, boxes };
+    });
+    return success({ subShipments, sub_shipments: subShipments, availability });
   } catch (err) {
     return handleApiError(err);
   }
