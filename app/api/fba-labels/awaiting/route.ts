@@ -61,8 +61,68 @@ function quantityFromContent(content: JsonRecord) {
   return numberValue(firstPresent(content.quantity, content.qty, content.qtyPacked, content.qty_packed, content.units));
 }
 
-function contentsForBox(contents: Prisma.JsonValue | null | undefined, lineItemsById: Map<string, JsonRecord>) {
-  return jsonArray(contents).map((content) => {
+function lineItemDisplayQuantity(lineItem: JsonRecord, quantityOverride?: unknown) {
+  return numberValue(firstPresent(quantityOverride, lineItem.dispatch_qty, lineItem.qty_received, lineItem.qty_expected));
+}
+
+function lineItemToContent(lineItem: JsonRecord, quantityOverride?: unknown) {
+  const product = lineItem.products ?? {};
+  const quantity = lineItemDisplayQuantity(lineItem, quantityOverride);
+
+  return {
+    shipmentItemId: lineItem.id ?? null,
+    shipment_item_id: lineItem.id ?? null,
+    sku: String(firstPresent(product.sku, lineItem.sku) ?? ""),
+    productName: String(firstPresent(product.product_name, lineItem.productName, lineItem.product_name) ?? ""),
+    product_name: String(firstPresent(product.product_name, lineItem.product_name, lineItem.productName) ?? ""),
+    fnsku: String(firstPresent(lineItem.fnsku, product.default_fnsku) ?? ""),
+    quantity,
+    qty: quantity,
+  };
+}
+
+function serializeLineItem(lineItem: JsonRecord) {
+  const content = lineItemToContent(lineItem);
+  return {
+    id: lineItem.id,
+    shipmentItemId: lineItem.id,
+    shipment_item_id: lineItem.id,
+    sku: content.sku,
+    productName: content.productName,
+    product_name: content.product_name,
+    fnsku: content.fnsku,
+    quantity: content.quantity,
+    qty: content.qty,
+    qtyExpected: lineItem.qty_expected,
+    qty_expected: lineItem.qty_expected,
+    qtyReceived: lineItem.qty_received,
+    qty_received: lineItem.qty_received,
+    dispatchQty: lineItem.dispatch_qty,
+    dispatch_qty: lineItem.dispatch_qty,
+  };
+}
+
+function fallbackLineItemsForBox(box: JsonRecord, lineItemsById: Map<string, JsonRecord>, lineItems: JsonRecord[]) {
+  const subShipmentItems = Array.isArray(box.sub_shipments?.sub_shipment_items) ? box.sub_shipments.sub_shipment_items : [];
+  if (box.sub_shipment_id && subShipmentItems.length === 1) {
+    const subShipmentItem = subShipmentItems[0];
+    const lineItem = lineItemsById.get(String(subShipmentItem.shipment_line_item_id ?? ""));
+    return lineItem ? [{ lineItem, quantity: subShipmentItem.quantity }] : [];
+  }
+
+  if (!box.sub_shipment_id && lineItems.length === 1) {
+    return [{ lineItem: lineItems[0], quantity: undefined }];
+  }
+
+  return [];
+}
+
+function contentsForBox(
+  contents: Prisma.JsonValue | null | undefined,
+  lineItemsById: Map<string, JsonRecord>,
+  fallbackItems: Array<{ lineItem: JsonRecord; quantity?: unknown }> = [],
+) {
+  const contentRows = jsonArray(contents).map((content) => {
     const shipmentItemId = itemIdFromContent(content);
     const lineItem = shipmentItemId ? lineItemsById.get(shipmentItemId) : undefined;
     const product = lineItem?.products ?? {};
@@ -79,6 +139,9 @@ function contentsForBox(contents: Prisma.JsonValue | null | undefined, lineItems
       qty: quantity,
     };
   });
+
+  if (contentRows.length) return contentRows;
+  return fallbackItems.map((fallback) => lineItemToContent(fallback.lineItem, fallback.quantity));
 }
 
 function aggregateContents(contentGroups: ReturnType<typeof contentsForBox>[]) {
@@ -185,10 +248,17 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
   const labelFile = fileForBox(box, linkedFilesByEntity);
   const serializedLabel = serializeLabelFile(labelFile);
   const isPallet = box.box_type === BoxType.pallet;
+  const lineItems = Array.isArray(shipment.shipment_line_items) ? shipment.shipment_line_items : [];
+  const fallbackItems = fallbackLineItemsForBox(box, lineItemsById, lineItems);
   const childBoxes = (box.pallet_children ?? []).map((childBox: JsonRecord) => {
     const childFile = fileForBox(childBox, linkedFilesByEntity);
     const childSerializedLabel = serializeLabelFile(childFile);
-    const childContents = contentsForBox(childBox.contents, lineItemsById);
+    const childFallbackItems = fallbackLineItemsForBox(
+      { ...childBox, sub_shipments: childBox.sub_shipments ?? box.sub_shipments },
+      lineItemsById,
+      lineItems,
+    );
+    const childContents = contentsForBox(childBox.contents, lineItemsById, childFallbackItems);
 
     return {
       id: childBox.id,
@@ -219,9 +289,16 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
       fbaLabelFile: childSerializedLabel,
       fba_label_file: childSerializedLabel,
       contents: childContents,
+      boxContents: childContents,
+      box_contents: childContents,
+      items: childContents,
+      boxItems: childContents,
+      box_items: childContents,
+      lineItems: childContents,
+      line_items: childContents,
     };
   });
-  const contents = isPallet ? aggregateContents(childBoxes.map((childBox: JsonRecord) => childBox.contents)) : contentsForBox(box.contents, lineItemsById);
+  const contents = isPallet ? aggregateContents(childBoxes.map((childBox: JsonRecord) => childBox.contents)) : contentsForBox(box.contents, lineItemsById, fallbackItems);
   const uploaded = Boolean(box.fba_shipping_label_file_id || serializedLabel);
   const labelStatus = uploaded ? "uploaded" : isPallet ? "missing_optional" : "missing";
 
@@ -284,6 +361,13 @@ function buildBoxPayload(box: JsonRecord, shipment: JsonRecord, lineItemsById: M
     childBoxes,
     child_boxes: childBoxes,
     contents,
+    boxContents: contents,
+    box_contents: contents,
+    items: contents,
+    boxItems: contents,
+    box_items: contents,
+    lineItems: contents,
+    line_items: contents,
   };
 }
 
@@ -381,6 +465,12 @@ export async function GET(req: Request) {
                   id: true,
                   reference: true,
                   status: true,
+                  sub_shipment_items: {
+                    select: {
+                      shipment_line_item_id: true,
+                      quantity: true,
+                    },
+                  },
                 },
               },
               pallet_children: {
@@ -438,6 +528,7 @@ export async function GET(req: Request) {
       const lineItemsById = new Map(
         shipment.shipment_line_items.map((item) => [item.id, item as unknown as JsonRecord]),
       );
+      const lineItems = shipment.shipment_line_items.map((item) => serializeLineItem(item as unknown as JsonRecord));
       const boxes = shipment.outbound_boxes
         .map((box) => buildBoxPayload(box as unknown as JsonRecord, shipment as unknown as JsonRecord, lineItemsById, linkedFilesByEntity))
         .filter((box) => includeUploaded || !box.fbaLabelUploaded);
@@ -475,6 +566,10 @@ export async function GET(req: Request) {
             created_at: shipment.created_at,
             updatedAt: shipment.updated_at,
             updated_at: shipment.updated_at,
+            lineItems,
+            line_items: lineItems,
+            shipmentLineItems: lineItems,
+            shipment_line_items: lineItems,
           },
           pendingLabelCount,
           pending_label_count: pendingLabelCount,
