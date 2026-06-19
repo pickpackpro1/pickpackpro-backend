@@ -64,7 +64,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         sku: item.products.sku,
         dispatchQty: item.dispatch_qty,
         allocated,
-        assignedToSubShipments: available?.assignedQty ?? 0,
+        assignedToSubShipments: available?.assignedToSubShipments ?? available?.assignedQty ?? 0,
+        packedInParentBoxes: available?.packedInParentBoxes ?? 0,
+        consumedQty: available?.consumedQty ?? available?.assignedDisplayQty ?? available?.assignedQty ?? 0,
+        assignedDisplayQty: available?.assignedDisplayQty ?? available?.consumedQty ?? available?.assignedQty ?? 0,
         remainingForSubShipments: available?.remainingQty ?? 0,
         prepared: available?.prepared ?? false,
       };
