@@ -201,7 +201,6 @@ export async function createShipmentLineItems(
     const product = await tx.products.upsert({
       where: { client_id_sku: { client_id: clientId, sku: item.sku } },
       update: {
-        product_name: item.productName,
         default_fnsku: getFnsku(item) || undefined,
         needs_bundling: needsBundling,
         bundle_size: bundleSize,
@@ -225,6 +224,7 @@ export async function createShipmentLineItems(
       data: {
         shipment_id: shipmentId,
         product_id: product.id,
+        product_name: item.productName,
         fnsku: getFnsku(item) || item.sku,
         qty_expected: item.expectedQty,
         dispatch_qty: null,

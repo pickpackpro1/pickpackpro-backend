@@ -69,6 +69,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       return {
         shipmentItemId: subItem.shipment_line_item_id,
         sku: subItem.shipment_line_items.products.sku,
+        productName: subItem.shipment_line_items.product_name ?? subItem.shipment_line_items.products.product_name,
+        product_name: subItem.shipment_line_items.product_name ?? subItem.shipment_line_items.products.product_name,
         plannedQty: subItem.quantity,
         allocated,
         remainingQty: Math.max(subItem.quantity - allocated, 0),

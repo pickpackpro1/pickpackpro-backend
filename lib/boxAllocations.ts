@@ -137,6 +137,7 @@ export async function buildValidatedBoxContents(
     where: { id: { in: shipmentItemIds }, shipment_id: input.shipmentId },
     select: {
       id: true,
+      product_name: true,
       qty_received: true,
       products: { select: { sku: true, product_name: true } },
     },
@@ -223,7 +224,7 @@ export async function buildValidatedBoxContents(
   return allocations.map((allocation) => {
     const lineItem = lineItemsById.get(allocation.shipmentItemId);
     const sku = allocation.sku || lineItem?.products.sku || "";
-    const productName = allocation.productName || lineItem?.products.product_name || "";
+    const productName = allocation.productName || lineItem?.product_name || lineItem?.products.product_name || "";
 
     return {
       id: randomUUID(),

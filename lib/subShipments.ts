@@ -121,10 +121,12 @@ export async function getSubShipmentAvailability(prisma: Db, shipmentId: string)
     const consumedQty = assignedToSubShipments + packedInParentBoxes;
     const remainingQty = Math.max(receivedQty - consumedQty, 0);
     const prepared = isLineItemPrepared(item);
+    const productName = item.product_name ?? item.products.product_name;
     return {
       shipmentItemId: item.id,
       sku: item.products.sku,
-      productName: item.products.product_name,
+      productName,
+      product_name: productName,
       expectedQty: item.qty_expected,
       receivedQty,
       dispatchQty: item.dispatch_qty ?? receivedQty,

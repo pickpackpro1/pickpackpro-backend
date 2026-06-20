@@ -37,7 +37,15 @@ export async function GET(req: Request) {
       status: rawStatus as ShipmentStatus | undefined,
       client_id: user.role === "client" ? user.clientId! : clientId,
       shipment_line_items: search
-        ? { some: { products: { sku: { contains: search, mode: "insensitive" } } } }
+        ? {
+            some: {
+              OR: [
+                { product_name: { contains: search, mode: "insensitive" } },
+                { products: { sku: { contains: search, mode: "insensitive" } } },
+                { products: { product_name: { contains: search, mode: "insensitive" } } },
+              ],
+            },
+          }
         : undefined,
     };
 

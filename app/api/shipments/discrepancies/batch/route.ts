@@ -60,6 +60,7 @@ async function getBatchShipmentDiscrepancies(
           id: true,
           shipment_id: true,
           product_id: true,
+          product_name: true,
           fnsku: true,
           qty_expected: true,
           qty_received: true,
@@ -101,6 +102,7 @@ async function getBatchShipmentDiscrepancies(
         const expectedQty = Number(item.qty_expected ?? 0);
         const receivedQty = Number(item.qty_received ?? 0);
         const differenceQty = receivedQty - expectedQty;
+        const productName = item.product_name ?? item.products.product_name;
 
         return {
           ...item,
@@ -117,8 +119,8 @@ async function getBatchShipmentDiscrepancies(
           sku: item.products.sku,
           productSku: item.products.sku,
           product_sku: item.products.sku,
-          productName: item.products.product_name,
-          product_name: item.products.product_name,
+          productName,
+          product_name: productName,
           fnskuLabel: item.fnsku,
           fnsku_label: item.fnsku,
           expectedQty,

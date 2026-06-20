@@ -196,8 +196,8 @@ function serializeBoxContents(contents: unknown, lineItemsById: Map<string, Json
       lineItemId: lineItemId || null,
       line_item_id: lineItemId || null,
       sku: String(firstPresent(content.sku, product.sku) ?? ""),
-      productName: String(firstPresent(content.productName, content.product_name, product.product_name) ?? ""),
-      product_name: String(firstPresent(content.product_name, content.productName, product.product_name) ?? ""),
+      productName: String(firstPresent(content.productName, content.product_name, lineItem?.product_name, product.product_name) ?? ""),
+      product_name: String(firstPresent(content.product_name, content.productName, lineItem?.product_name, product.product_name) ?? ""),
       fnsku: String(firstPresent(content.fnsku, content.fnskuLabel, content.fnsku_label, lineItem?.fnsku, product.default_fnsku) ?? ""),
       quantity: qty,
       qty,
@@ -414,6 +414,7 @@ function serializeLineItem(item: JsonRecord, index: number, fileIndex: ReturnTyp
   const serviceStatus = jsonObject(item.service_status);
   const customServices = jsonArray(item.custom_services);
   const bundleSize = numberValue(firstPresent(item.bundle_size, product.bundle_size, 1), 1);
+  const productName = String(firstPresent(item.product_name, product.product_name) ?? "");
   const labelFile = fileForEntity(
     fileIndex,
     ["item", "label", "shipment_line_item"],
@@ -434,8 +435,8 @@ function serializeLineItem(item: JsonRecord, index: number, fileIndex: ReturnTyp
     product_id: item.product_id,
     product,
     products: product,
-    productName: product.product_name ?? "",
-    product_name: product.product_name ?? "",
+    productName,
+    product_name: productName,
     sku: product.sku ?? "",
     fnsku: item.fnsku,
     fnskuLabel: item.fnsku,
@@ -487,6 +488,7 @@ function serializeLineItem(item: JsonRecord, index: number, fileIndex: ReturnTyp
 function buildServiceTasks(lineItems: JsonRecord[], catalogByCode: Map<string, JsonRecord>) {
   return lineItems.flatMap((item) => {
     const product: JsonRecord = serializeProduct(item.products) ?? {};
+    const productName = String(firstPresent(item.product_name, product.product_name) ?? "");
     const selected = stringArray(item.services_selected);
     const statuses = jsonObject(item.service_status);
 
@@ -525,8 +527,8 @@ function buildServiceTasks(lineItems: JsonRecord[], catalogByCode: Map<string, J
         sku: product.sku ?? "",
         productSku: product.sku ?? "",
         product_sku: product.sku ?? "",
-        productName: product.product_name ?? "",
-        product_name: product.product_name ?? "",
+        productName,
+        product_name: productName,
       };
     });
   });
@@ -558,6 +560,7 @@ function buildDiscrepancies(lineItems: JsonRecord[]) {
     .filter((item) => Boolean(item.qty_discrepancy_flag))
     .map((item) => {
       const product: JsonRecord = serializeProduct(item.products) ?? {};
+      const productName = String(firstPresent(item.product_name, product.product_name) ?? "");
       const expectedQty = numberValue(item.qty_expected);
       const receivedQty = numberValue(item.qty_received);
       const differenceQty = receivedQty - expectedQty;
@@ -571,8 +574,8 @@ function buildDiscrepancies(lineItems: JsonRecord[]) {
         productId: item.product_id,
         product_id: item.product_id,
         sku: product.sku ?? "",
-        productName: product.product_name ?? "",
-        product_name: product.product_name ?? "",
+        productName,
+        product_name: productName,
         fnsku: item.fnsku,
         expectedQty,
         expected_qty: expectedQty,
@@ -685,6 +688,7 @@ function buildSubShipmentPayload(params: {
   const items = (params.subShipment.sub_shipment_items ?? []).map((item: JsonRecord) => {
     const lineItem = params.lineItemsById.get(String(item.shipment_line_item_id));
     const product = lineItem?.products ?? {};
+    const productName = String(firstPresent(lineItem?.product_name, product.product_name) ?? "");
     const plannedQty = numberValue(item.quantity);
     const allocated = allocatedQuantityForLine(rawBoxesForSubShipment, String(item.shipment_line_item_id));
 
@@ -695,8 +699,8 @@ function buildSubShipmentPayload(params: {
       lineItemId: item.shipment_line_item_id,
       line_item_id: item.shipment_line_item_id,
       sku: product.sku ?? "",
-      productName: product.product_name ?? "",
-      product_name: product.product_name ?? "",
+      productName,
+      product_name: productName,
       fnsku: lineItem?.fnsku ?? product.default_fnsku ?? "",
       quantity: plannedQty,
       qty: plannedQty,
@@ -828,6 +832,7 @@ export async function getShipmentViewBundle(
             id: true,
             shipment_id: true,
             product_id: true,
+            product_name: true,
             fnsku: true,
             fnsku_label_file_id: true,
             qty_expected: true,

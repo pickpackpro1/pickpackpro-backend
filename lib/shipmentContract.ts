@@ -136,6 +136,7 @@ function serializeLineItem(item: Record<string, any>, index: number) {
   const services = safeJsonArray(item.services_selected);
   const serviceStatus = safeJsonObject(item.service_status);
   const customServices = safeJsonArray(item.custom_services);
+  const productName = item.product_name ?? product?.product_name ?? "";
 
   return {
     ...item,
@@ -143,8 +144,8 @@ function serializeLineItem(item: Record<string, any>, index: number) {
     product,
     productId: item.product_id,
     product_id: item.product_id,
-    productName: product?.product_name ?? "",
-    product_name: product?.product_name ?? "",
+    productName,
+    product_name: productName,
     sku: product?.sku ?? "",
     fnskuLabel: item.fnsku,
     fnsku_label: item.fnsku,

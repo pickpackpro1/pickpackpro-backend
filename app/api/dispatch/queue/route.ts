@@ -70,8 +70,8 @@ function lineItemToContent(lineItem: JsonRecord, quantityOverride?: unknown) {
     lineItemId: lineItem.id ?? null,
     line_item_id: lineItem.id ?? null,
     sku: String(firstPresent(product.sku, lineItem.sku) ?? ""),
-    productName: String(firstPresent(product.product_name, lineItem.productName, lineItem.product_name) ?? ""),
-    product_name: String(firstPresent(product.product_name, lineItem.product_name, lineItem.productName) ?? ""),
+    productName: String(firstPresent(lineItem.productName, lineItem.product_name, product.product_name) ?? ""),
+    product_name: String(firstPresent(lineItem.product_name, lineItem.productName, product.product_name) ?? ""),
     fnsku: String(firstPresent(lineItem.fnsku, product.default_fnsku) ?? ""),
     quantity,
     qty: quantity,
@@ -110,8 +110,8 @@ function contentsForBox(
       lineItemId: shipmentItemId || null,
       line_item_id: shipmentItemId || null,
       sku: String(firstPresent(content.sku, product.sku) ?? ""),
-      productName: String(firstPresent(content.productName, content.product_name, product.product_name) ?? ""),
-      product_name: String(firstPresent(content.product_name, content.productName, product.product_name) ?? ""),
+      productName: String(firstPresent(content.productName, content.product_name, lineItem?.product_name, product.product_name) ?? ""),
+      product_name: String(firstPresent(content.product_name, content.productName, lineItem?.product_name, product.product_name) ?? ""),
       fnsku: String(firstPresent(content.fnsku, content.fnskuLabel, content.fnsku_label, lineItem?.fnsku, product.default_fnsku) ?? ""),
       quantity,
       qty: quantity,
@@ -417,6 +417,7 @@ function searchWhere(search?: string) {
           shipment_line_items: {
             some: {
               OR: [
+                { product_name: { contains: search, mode: "insensitive" as const } },
                 { fnsku: { contains: search, mode: "insensitive" as const } },
                 { products: { sku: { contains: search, mode: "insensitive" as const } } },
                 { products: { product_name: { contains: search, mode: "insensitive" as const } } },
@@ -489,6 +490,7 @@ export async function GET(req: Request) {
               shipment_line_items: {
                 select: {
                   id: true,
+                  product_name: true,
                   fnsku: true,
                   qty_expected: true,
                   qty_received: true,

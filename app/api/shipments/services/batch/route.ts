@@ -65,6 +65,7 @@ async function getBatchShipmentServices(req: Request, input: z.infer<typeof batc
       shipment_line_items: {
         select: {
           id: true,
+          product_name: true,
           services_selected: true,
           service_status: true,
           products: {
@@ -93,6 +94,7 @@ async function getBatchShipmentServices(req: Request, input: z.infer<typeof batc
     const tasks = shipment.shipment_line_items.flatMap((item) => {
       const selected = asStringArray(item.services_selected);
       const statuses = asObject(item.service_status);
+      const productName = item.product_name ?? item.products.product_name;
 
       return selected.map((service) => {
         const status = String(statuses[service] ?? "PENDING");
@@ -119,8 +121,8 @@ async function getBatchShipmentServices(req: Request, input: z.infer<typeof batc
           products: item.products,
           productSku: item.products.sku,
           product_sku: item.products.sku,
-          productName: item.products.product_name,
-          product_name: item.products.product_name,
+          productName,
+          product_name: productName,
         };
       });
     });

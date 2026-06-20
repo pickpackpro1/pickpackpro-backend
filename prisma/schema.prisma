@@ -231,6 +231,7 @@ model shipment_line_items {
   id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shipment_id          String          @db.Uuid
   product_id           String          @db.Uuid
+  product_name         String?
   fnsku                String
   fnsku_label_file_id  String?         @db.Uuid
   qty_expected         Int

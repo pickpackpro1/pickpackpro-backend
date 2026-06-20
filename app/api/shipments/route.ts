@@ -37,7 +37,15 @@ export async function GET(req: Request) {
       status,
       client_id: user.role === "client" ? user.clientId! : clientId,
       shipment_line_items: search
-        ? { some: { products: { sku: { contains: search, mode: "insensitive" as const } } } }
+        ? {
+            some: {
+              OR: [
+                { product_name: { contains: search, mode: "insensitive" as const } },
+                { products: { sku: { contains: search, mode: "insensitive" as const } } },
+                { products: { product_name: { contains: search, mode: "insensitive" as const } } },
+              ],
+            },
+          }
         : undefined,
     };
     const [rows, total] = await Promise.all([
