@@ -5,6 +5,8 @@ import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
+const DEFAULT_INVOICE_PAYMENT_TERMS_DAYS = 14;
+
 const defaultSettings = {
   working_days: {
     monday: true,
@@ -21,11 +23,13 @@ const defaultSettings = {
   vat_number: null as string | null,
   bank_details: {},
   notification_toggles: {},
+  invoice_payment_terms_days: DEFAULT_INVOICE_PAYMENT_TERMS_DAYS,
 };
 
 const schema = z.object({
   workingDays: z.record(z.boolean()).optional(),
   dispatchLeadTimeHours: z.number().int().min(1).optional(),
+  invoicePaymentTermsDays: z.number().int().min(1).optional(),
   companyName: z.string().optional(),
   companyAddress: z.record(z.unknown()).optional(),
   vatNumber: z.string().optional().nullable(),
@@ -35,11 +39,20 @@ const schema = z.object({
   notificationToggles: z.record(z.boolean()).optional(),
 });
 
+function serializeSettings<T extends { invoice_payment_terms_days?: number | null }>(settings: T) {
+  const invoicePaymentTermsDays = settings.invoice_payment_terms_days ?? DEFAULT_INVOICE_PAYMENT_TERMS_DAYS;
+  return {
+    ...settings,
+    invoice_payment_terms_days: invoicePaymentTermsDays,
+    invoicePaymentTermsDays,
+  };
+}
+
 export async function GET(req: Request) {
   try {
     await requireRole(req, ["admin"]);
     const settings = await prisma.app_settings.findFirst();
-    return success(settings ?? defaultSettings);
+    return success(serializeSettings(settings ?? defaultSettings));
   } catch (err) {
     return handleApiError(err);
   }
@@ -53,6 +66,7 @@ export async function PATCH(req: Request) {
     const data = {
       working_days: body.workingDays as Prisma.InputJsonValue | undefined,
       dispatch_lead_time_hours: body.dispatchLeadTimeHours,
+      invoice_payment_terms_days: body.invoicePaymentTermsDays,
       company_name: body.companyName,
       company_address: body.companyAddress as Prisma.InputJsonValue | undefined,
       vat_number: body.vatNumber,
@@ -69,6 +83,7 @@ export async function PATCH(req: Request) {
           data: {
             working_days: (body.workingDays ?? defaultSettings.working_days) as Prisma.InputJsonValue,
             dispatch_lead_time_hours: body.dispatchLeadTimeHours ?? defaultSettings.dispatch_lead_time_hours,
+            invoice_payment_terms_days: body.invoicePaymentTermsDays ?? defaultSettings.invoice_payment_terms_days,
             company_name: body.companyName ?? defaultSettings.company_name,
             company_address: (body.companyAddress ?? defaultSettings.company_address) as Prisma.InputJsonValue,
             vat_number: body.vatNumber ?? defaultSettings.vat_number,
@@ -80,7 +95,7 @@ export async function PATCH(req: Request) {
           },
         });
 
-    return success(settings);
+    return success(serializeSettings(settings));
   } catch (err) {
     return handleApiError(err);
   }

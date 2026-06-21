@@ -47,6 +47,7 @@ const invoiceInclude = {
 } satisfies Prisma.invoicesInclude;
 
 const MAX_INVOICE_NUMBER_ATTEMPTS = 5;
+const DEFAULT_INVOICE_PAYMENT_TERMS_DAYS = 14;
 
 function addDays(date: Date, days: number) {
   const next = new Date(date);
@@ -54,10 +55,23 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
-export function finalInvoiceDates(now = new Date()) {
+function validPaymentTermsDays(value: unknown) {
+  const days = Number(value);
+  return Number.isInteger(days) && days >= 1 ? days : DEFAULT_INVOICE_PAYMENT_TERMS_DAYS;
+}
+
+async function invoicePaymentTermsDays(prisma: Db) {
+  const settings = await prisma.app_settings.findFirst({
+    select: { invoice_payment_terms_days: true },
+  });
+  return validPaymentTermsDays(settings?.invoice_payment_terms_days);
+}
+
+export async function finalInvoiceDates(prisma: Db, now = new Date()) {
+  const paymentTermsDays = await invoicePaymentTermsDays(prisma);
   return {
     invoiceDate: now,
-    dueDate: addDays(now, 14),
+    dueDate: addDays(now, paymentTermsDays),
   };
 }
 
@@ -463,13 +477,14 @@ export async function ensureShipmentDraftInvoice(prisma: Db, shipmentId: string,
   const lines = [...serviceLines, ...boxLines];
   const totals = totalsFor(lines);
   const now = new Date();
+  const { invoiceDate, dueDate } = await finalInvoiceDates(prisma, now);
 
-  return createDispatchInvoice(prisma, { shipmentId }, now, {
+  return createDispatchInvoice(prisma, { shipmentId }, invoiceDate, {
     client_id: shipment.client_id,
     shipment_id: shipment.id,
     sub_shipment_id: null,
-    invoice_date: now,
-    due_date: addDays(now, 14),
+    invoice_date: invoiceDate,
+    due_date: dueDate,
     invoice_type: "shipment",
     subtotal: totals.subtotal,
     vat_amount: totals.vatAmount,
@@ -536,13 +551,14 @@ export async function ensureSubShipmentDraftInvoice(prisma: Db, subShipmentId: s
   const lines = [...serviceLines, ...boxLines];
   const totals = totalsFor(lines);
   const now = new Date();
+  const { invoiceDate, dueDate } = await finalInvoiceDates(prisma, now);
 
-  return createDispatchInvoice(prisma, { subShipmentId }, now, {
+  return createDispatchInvoice(prisma, { subShipmentId }, invoiceDate, {
     client_id: subShipment.shipments.client_id,
     shipment_id: subShipment.parent_shipment_id,
     sub_shipment_id: subShipment.id,
-    invoice_date: now,
-    due_date: addDays(now, 14),
+    invoice_date: invoiceDate,
+    due_date: dueDate,
     invoice_type: "sub_shipment",
     subtotal: totals.subtotal,
     vat_amount: totals.vatAmount,

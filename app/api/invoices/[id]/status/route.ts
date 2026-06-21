@@ -17,7 +17,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       select: { status: true },
     });
     const now = new Date();
-    const finalDates = body.status === "sent" ? finalInvoiceDates(now) : null;
+    const finalDates = body.status === "sent" ? await finalInvoiceDates(prisma, now) : null;
     const invoice = await prisma.invoices.update({
       where: { id: params.id },
       data: {

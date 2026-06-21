@@ -8,7 +8,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   try {
     const user = await requireRole(req, ["admin"]);
     const now = new Date();
-    const { invoiceDate, dueDate } = finalInvoiceDates(now);
+    const { invoiceDate, dueDate } = await finalInvoiceDates(prisma, now);
     const invoice = await prisma.invoices.update({
       where: { id: params.id },
       data: {
