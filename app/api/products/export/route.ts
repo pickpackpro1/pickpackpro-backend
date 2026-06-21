@@ -25,10 +25,15 @@ function csv(value: unknown) {
 
 export async function GET(req: Request) {
   try {
-    await requireRole(req, ["admin"]);
+    const user = await requireRole(req, ["admin", "client"]);
     const url = new URL(req.url);
-    const clientId = url.searchParams.get("clientId");
+    const clientId = user.role === "client" ? user.clientId : url.searchParams.get("clientId");
     if (!clientId) throw new ApiError("clientId is required", 400);
+    const client = await prisma.clients.findFirst({
+      where: { id: clientId, soft_deleted_at: null },
+      select: { id: true },
+    });
+    if (!client) throw new ApiError("Client not found", 404);
 
     const products = await prisma.products.findMany({
       where: { client_id: clientId, soft_deleted_at: null },

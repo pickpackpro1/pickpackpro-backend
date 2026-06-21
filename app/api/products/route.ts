@@ -33,46 +33,97 @@ const productSchema = z
     }
   });
 
+function positiveInt(value: string | null, fallback: number, max?: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return max ? Math.min(parsed, max) : parsed;
+}
+
 export async function GET(req: Request) {
   try {
     const user = await requireRole(req, ["admin", "client"]);
     const url = new URL(req.url);
     const activeParam = url.searchParams.get("active");
+    const statusParam = url.searchParams.get("status")?.trim().toLowerCase();
+    const search = url.searchParams.get("search")?.trim();
+    const hasPagination = url.searchParams.has("page") || url.searchParams.has("limit");
+    const page = positiveInt(url.searchParams.get("page"), 1);
+    const limit = positiveInt(url.searchParams.get("limit"), 25, 100);
     const clientId = user.role === "client" ? user.clientId : url.searchParams.get("clientId");
 
     if (user.role === "client" && !user.clientId) throw new ApiError("Client user has no clientId", 403);
 
-    const products = await prisma.products.findMany({
-      where: {
-        client_id: clientId ?? undefined,
-        soft_deleted_at: null,
-        active: activeParam === null ? true : activeParam === "true",
-      },
-      select: {
-        id: true,
-        sku: true,
-        product_name: true,
-        default_fnsku: true,
-        default_fnsku_label_file_id: true,
-        length_cm: true,
-        width_cm: true,
-        height_cm: true,
-        weight_kg: true,
-        hazmat_flag: true,
-        expiry_tracked: true,
-        lot_tracked: true,
-        needs_bundling: true,
-        bundle_size: true,
-        active: true,
-        created_at: true,
-        client_id: true,
-        clients: { select: { id: true, company_name: true } },
-        uploaded_files_products_default_fnsku_label_file_idTouploaded_files: true,
-      },
-      orderBy: { created_at: "desc" },
-    });
+    const active =
+      statusParam === "all"
+        ? undefined
+        : statusParam === "inactive"
+          ? false
+          : statusParam === "active"
+            ? true
+            : activeParam === null
+              ? true
+              : activeParam === "true";
+    const searchFilter: Prisma.productsWhereInput[] = search
+      ? [
+          { product_name: { contains: search, mode: "insensitive" } },
+          { sku: { contains: search, mode: "insensitive" } },
+          { default_fnsku: { contains: search, mode: "insensitive" } },
+          { clients: { is: { company_name: { contains: search, mode: "insensitive" } } } },
+          { clients: { is: { email: { contains: search, mode: "insensitive" } } } },
+        ]
+      : [];
+    const where: Prisma.productsWhereInput = {
+      client_id: clientId ?? undefined,
+      soft_deleted_at: null,
+      active,
+      ...(searchFilter.length ? { OR: searchFilter } : {}),
+    };
+    const select = {
+      id: true,
+      sku: true,
+      product_name: true,
+      default_fnsku: true,
+      default_fnsku_label_file_id: true,
+      length_cm: true,
+      width_cm: true,
+      height_cm: true,
+      weight_kg: true,
+      hazmat_flag: true,
+      expiry_tracked: true,
+      lot_tracked: true,
+      needs_bundling: true,
+      bundle_size: true,
+      active: true,
+      created_at: true,
+      client_id: true,
+      clients: { select: { id: true, company_name: true, email: true } },
+      uploaded_files_products_default_fnsku_label_file_idTouploaded_files: true,
+    } satisfies Prisma.productsSelect;
 
-    return success(products.map((product) => withDefaultFnskuLabelFile(product, null)));
+    const [products, total] = await Promise.all([
+      prisma.products.findMany({
+        where,
+        select,
+        orderBy: { created_at: "desc" },
+        ...(hasPagination ? { skip: (page - 1) * limit, take: limit } : {}),
+      }),
+      hasPagination ? prisma.products.count({ where }) : Promise.resolve(0),
+    ]);
+    const normalizedProducts = products.map((product) => withDefaultFnskuLabelFile(product, null));
+
+    if (hasPagination) {
+      return success({
+        products: normalizedProducts,
+        items: normalizedProducts,
+        rows: normalizedProducts,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      });
+    }
+
+    return success(normalizedProducts);
   } catch (err) {
     return handleApiError(err);
   }

@@ -110,9 +110,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   try {
-    const user = await requireRole(req, ["admin"]);
+    const user = await requireRole(req, ["admin", "client"]);
     const before = await prisma.products.findFirst({ where: { id: params.id, soft_deleted_at: null } });
     if (!before) throw new ApiError("Product not found", 404);
+    if (user.role === "client" && before.client_id !== user.clientId) {
+      throw new ApiError("Cannot delete another client's product", 403);
+    }
 
     const product = await prisma.products.update({
       where: { id: params.id },
