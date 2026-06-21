@@ -172,26 +172,58 @@ export async function assertSubShipmentItemsAvailable(
 export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId: string) {
   const shipment = await prisma.shipments.findUnique({
     where: { id: shipmentId },
-    include: {
-      shipment_line_items: true,
-      sub_shipments: {
-        where: { status: { in: activeSubShipmentStatuses } },
-        include: { sub_shipment_items: true },
+    select: {
+      id: true,
+      status: true,
+      dispatched_date: true,
+      shipment_line_items: {
+        select: {
+          id: true,
+          qty_received: true,
+        },
+      },
+      outbound_boxes: {
+        select: {
+          box_type: true,
+          contents: true,
+          dispatched_at: true,
+          sub_shipments: {
+            select: {
+              status: true,
+            },
+          },
+        },
       },
     },
   });
   if (!shipment) return null;
+  if (shipment.status === "dispatched" || shipment.status === "completed") return shipment;
 
-  const totalReceived = shipment.shipment_line_items.reduce((sum, item) => sum + (item.qty_received ?? 0), 0);
-  const assignedQty = shipment.sub_shipments
-    .flatMap((subShipment) => subShipment.sub_shipment_items)
-    .reduce((sum, item) => sum + item.quantity, 0);
-  const allAssigned = totalReceived > 0 && assignedQty >= totalReceived;
-  const allSubShipmentsDispatched =
-    shipment.sub_shipments.length > 0 &&
-    shipment.sub_shipments.every((subShipment) => subShipment.status === "dispatched" || subShipment.status === "completed");
+  const requiredByItem = new Map<string, number>();
+  for (const item of shipment.shipment_line_items) {
+    const requiredQty = item.qty_received ?? 0;
+    if (requiredQty > 0) requiredByItem.set(item.id, requiredQty);
+  }
 
-  if (allAssigned && allSubShipmentsDispatched && shipment.status !== "dispatched" && shipment.status !== "completed") {
+  const totalRequired = [...requiredByItem.values()].reduce((sum, quantity) => sum + quantity, 0);
+  if (totalRequired <= 0) return shipment;
+
+  const dispatchedByItem = new Map<string, number>();
+  for (const box of shipment.outbound_boxes) {
+    if (box.box_type !== "box") continue;
+    if (!box.dispatched_at) continue;
+    if (box.sub_shipments?.status === "cancelled") continue;
+
+    for (const content of boxContents(box.contents)) {
+      addQuantity(dispatchedByItem, contentShipmentItemId(content), contentQuantity(content));
+    }
+  }
+
+  const allReceivedQuantitiesDispatched = [...requiredByItem.entries()].every(
+    ([shipmentItemId, requiredQty]) => (dispatchedByItem.get(shipmentItemId) ?? 0) >= requiredQty,
+  );
+
+  if (allReceivedQuantitiesDispatched) {
     const updated = await prisma.shipments.update({
       where: { id: shipmentId },
       data: {

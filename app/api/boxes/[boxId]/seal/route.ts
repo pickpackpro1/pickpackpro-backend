@@ -3,9 +3,9 @@ import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
 import { sendEmail } from "@/lib/email";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
-import { areDispatchableBoxesDispatched, dispatchBoxOrPallet } from "@/lib/pallets";
+import { dispatchBoxOrPallet } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
-import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
+import { refreshParentShipmentDispatchStatus, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const schema = z.object({ trackingCode: z.string().optional().nullable() });
@@ -16,20 +16,21 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
     await json(req, schema);
     const box = await prisma.$transaction(async (tx) => {
       const updatedBox = await dispatchBoxOrPallet(tx, params.boxId);
+      const shipmentBeforeRefresh = await tx.shipments.findUnique({
+        where: { id: updatedBox.shipment_id },
+        select: { id: true, client_id: true, reference: true, status: true },
+      });
       if (updatedBox.sub_shipment_id) {
         await refreshSubShipmentStatusFromBoxes(tx, updatedBox.sub_shipment_id, user.userId);
       }
-      const boxes = await tx.outbound_boxes.findMany({
-        where: { shipment_id: updatedBox.shipment_id, sub_shipment_id: null },
-      });
-      const subShipmentCount = await tx.sub_shipments.count({
-        where: { parent_shipment_id: updatedBox.shipment_id, status: { not: "cancelled" } },
-      });
-      if (!updatedBox.sub_shipment_id && subShipmentCount === 0 && areDispatchableBoxesDispatched(boxes)) {
-        const shipment = await tx.shipments.update({
-          where: { id: updatedBox.shipment_id },
-          data: { status: "dispatched", dispatched_date: new Date(), updated_at: new Date() },
-        });
+      const refreshedShipment = await refreshParentShipmentDispatchStatus(tx, updatedBox.shipment_id);
+
+      if (
+        shipmentBeforeRefresh &&
+        shipmentBeforeRefresh.status !== "dispatched" &&
+        shipmentBeforeRefresh.status !== "completed" &&
+        refreshedShipment?.status === "dispatched"
+      ) {
         await tx.audit_logs.create({
           data: {
             user_id: user.userId,
@@ -37,13 +38,13 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
             user_role: user.role,
             action: "shipment.status_changed",
             entity_type: "shipment",
-            entity_id: shipment.id,
-            before_value: { status: "prepped" },
+            entity_id: shipmentBeforeRefresh.id,
+            before_value: { status: shipmentBeforeRefresh.status },
             after_value: { status: "dispatched" },
           },
         });
         const clientUser = await tx.users.findFirst({
-          where: { client_id: shipment.client_id, role: "client" },
+          where: { client_id: shipmentBeforeRefresh.client_id, role: "client" },
         });
         if (clientUser) {
           await tx.notifications.create({
@@ -51,14 +52,14 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
               user_id: clientUser.id,
               type: "shipment_dispatched",
               title: "Shipment Dispatched",
-              body: `Your shipment ${shipment.reference} has been dispatched to Amazon.`,
+              body: `Your shipment ${shipmentBeforeRefresh.reference} has been dispatched to Amazon.`,
               link_url: "/shipments",
             },
           });
           try {
             await sendEmail({
               to: clientUser.email,
-              subject: `Shipment Dispatched — ${shipment.reference}`,
+              subject: `Shipment Dispatched — ${shipmentBeforeRefresh.reference}`,
               html: `<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f6f9;padding:40px 0;font-family:Arial,sans-serif;">
   <tr>
     <td align="center">
@@ -85,7 +86,7 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
               <tr>
                 <td style="padding:16px 20px;">
                   <div style="color:#888888;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Shipment Reference</div>
-                  <div style="color:#132347;font-size:18px;font-weight:bold;">${shipment.reference}</div>
+                  <div style="color:#132347;font-size:18px;font-weight:bold;">${shipmentBeforeRefresh.reference}</div>
                 </td>
               </tr>
             </table>
