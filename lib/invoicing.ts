@@ -146,7 +146,11 @@ export async function addManualInvoiceLine(
   },
 ) {
   const invoice = await assertEditableInvoice(prisma, invoiceId);
-  const vatRate = input.vatRate ?? (invoice.clients.vat_registered ? 0.2 : 0);
+  const isClientInvoice =
+    !invoice.shipment_id &&
+    !invoice.sub_shipment_id &&
+    (invoice.invoice_type === "monthly" || invoice.invoice_type === "ad_hoc");
+  const vatRate = input.vatRate ?? (isClientInvoice ? 0 : invoice.clients.vat_registered ? 0.2 : 0);
   const { amount, vatAmount } = lineAmounts(input.qty, input.unitRate, vatRate);
   await prisma.invoice_line_items.create({
     data: {

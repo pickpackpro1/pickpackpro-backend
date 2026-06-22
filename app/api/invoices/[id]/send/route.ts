@@ -4,17 +4,38 @@ import { sendEmail } from "@/lib/email";
 import { finalInvoiceDates } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 
+function addMonths(date: Date, months: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+
+function isClientInvoiceType(invoiceType: string | null | undefined, shipmentId: string | null, subShipmentId: string | null) {
+  return !shipmentId && !subShipmentId && (invoiceType === "monthly" || invoiceType === "ad_hoc");
+}
+
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
     const user = await requireRole(req, ["admin"]);
     const now = new Date();
-    const { invoiceDate, dueDate } = await finalInvoiceDates(prisma, now);
+    const existingInvoice = await prisma.invoices.findUnique({
+      where: { id: params.id },
+      select: { invoice_type: true, shipment_id: true, sub_shipment_id: true },
+    });
+    const isClientInvoice = isClientInvoiceType(
+      existingInvoice?.invoice_type,
+      existingInvoice?.shipment_id ?? null,
+      existingInvoice?.sub_shipment_id ?? null,
+    );
+    const finalDates = isClientInvoice
+      ? { invoiceDate: undefined, dueDate: addMonths(now, 1) }
+      : await finalInvoiceDates(prisma, now);
     const invoice = await prisma.invoices.update({
       where: { id: params.id },
       data: {
         status: "sent",
-        invoice_date: invoiceDate,
-        due_date: dueDate,
+        ...(finalDates.invoiceDate ? { invoice_date: finalDates.invoiceDate } : {}),
+        due_date: finalDates.dueDate,
         sent_at: now,
       },
     });

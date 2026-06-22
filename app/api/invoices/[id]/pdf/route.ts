@@ -21,10 +21,23 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(value);
     const formatDate = (value: Date | null) =>
       value ? new Date(value).toLocaleDateString("en-GB") : "--";
+    const isClientInvoice =
+      !invoice.shipment_id &&
+      !invoice.sub_shipment_id &&
+      (invoice.invoice_type === "monthly" || invoice.invoice_type === "ad_hoc");
 
     const lineItemsHtml = invoice.invoice_line_items
       .map(
-        (item) => `
+        (item) =>
+          isClientInvoice
+            ? `
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;">${item.description}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;">${item.qty}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;">${formatCurrency(Number(item.unit_rate))}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;">${formatCurrency(Number(item.amount))}</td>
+        </tr>`
+            : `
         <tr>
           <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;">${item.description}</td>
           <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;">${item.qty}</td>
@@ -67,13 +80,17 @@ th:not(:first-child){text-align:right;}
 </div>
 <table>
   <thead><tr>
-    <th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th><th>VAT</th>
+    ${
+      isClientInvoice
+        ? "<th>Description</th><th>Unit</th><th>Rate</th><th>Amount</th>"
+        : "<th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th><th>VAT</th>"
+    }
   </tr></thead>
   <tbody>${lineItemsHtml}</tbody>
 </table>
 <table class="totals" style="margin-top:24px;max-width:300px;margin-left:auto;">
-  <tr><td>Subtotal</td><td style="text-align:right;">${formatCurrency(Number(invoice.subtotal))}</td></tr>
-  <tr><td>VAT</td><td style="text-align:right;">${formatCurrency(Number(invoice.vat_amount))}</td></tr>
+  ${isClientInvoice ? "" : `<tr><td>Subtotal</td><td style="text-align:right;">${formatCurrency(Number(invoice.subtotal))}</td></tr>
+  <tr><td>VAT</td><td style="text-align:right;">${formatCurrency(Number(invoice.vat_amount))}</td></tr>`}
   <tr class="total-row"><td>Total</td><td style="text-align:right;">${formatCurrency(Number(invoice.total))}</td></tr>
 </table>
 <div style="margin-top:48px;padding:20px;background:#f8f9fa;border-radius:8px;font-size:13px;">
