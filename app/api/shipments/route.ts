@@ -23,12 +23,18 @@ const createSchema = z.object({
   items: z.array(draftItemSchema).default([]),
 });
 
+function positiveInt(value: string | null, fallback: number, max?: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return max ? Math.min(parsed, max) : parsed;
+}
+
 export async function GET(req: Request) {
   try {
     const user = await requireUser(req);
     const url = new URL(req.url);
-    const page = Number(url.searchParams.get("page") ?? 1);
-    const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), 100);
+    const page = positiveInt(url.searchParams.get("page"), 1);
+    const limit = positiveInt(url.searchParams.get("limit"), 20, 100);
     const status = url.searchParams.get("status")?.toLowerCase() as ShipmentStatus | undefined;
     const clientId = url.searchParams.get("clientId") ?? undefined;
     const search = url.searchParams.get("search") ?? undefined;
@@ -58,7 +64,7 @@ export async function GET(req: Request) {
       }),
       prisma.shipments.count({ where }),
     ]);
-    return success({ rows: rows.map(serializeShipment), total, page, limit });
+    return success({ rows: rows.map(serializeShipment), total, page, limit, totalPages: Math.ceil(total / limit) });
   } catch (err) {
     return handleApiError(err);
   }

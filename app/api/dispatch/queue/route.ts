@@ -586,6 +586,7 @@ export async function GET(req: Request) {
       total,
       page,
       limit,
+      totalPages: Math.ceil(total / limit),
       pendingCount,
       pending_count: pendingCount,
       dispatchedCount,

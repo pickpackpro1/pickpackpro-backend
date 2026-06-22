@@ -37,7 +37,7 @@ export async function GET(req: Request) {
       prisma.audit_logs.count({ where }),
     ]);
 
-    return success({ logs, total, page, limit });
+    return success({ logs, rows: logs, total, page, limit, totalPages: Math.ceil(total / limit) });
   } catch (err) {
     return handleApiError(err);
   }

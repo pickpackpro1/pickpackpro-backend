@@ -610,6 +610,7 @@ export async function GET(req: Request) {
       total,
       page,
       limit,
+      totalPages: Math.ceil(total / limit),
       pendingBoxCount,
       pending_box_count: pendingBoxCount,
       includeUploaded,

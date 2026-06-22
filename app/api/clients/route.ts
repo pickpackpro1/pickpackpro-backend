@@ -29,24 +29,70 @@ const createSchema = z.object({
   suppress_invite_email: z.boolean().optional(),
 });
 
+function positiveInt(value: string | null, fallback: number, max?: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return max ? Math.min(parsed, max) : parsed;
+}
+
 export async function GET(req: Request) {
   try {
     await requireRole(req, ["admin"]);
     const url = new URL(req.url);
-    const status = url.searchParams.get("isActive") === "false" ? undefined : "active";
-    const tier = url.searchParams.get("tier")?.toLowerCase() as PricingTier | undefined;
-    const clients = await prisma.clients.findMany({
-      where: {
-        status,
-        pricing_tier_override: tier,
-        soft_deleted_at: null,
-      },
-      include: {
-        _count: { select: { users: true } },
-        shipments: { orderBy: { created_at: "desc" }, take: 1, select: { created_at: true } },
-      },
-      orderBy: { created_at: "desc" },
-    });
+    const hasPagination = url.searchParams.has("page") || url.searchParams.has("limit");
+    const page = positiveInt(url.searchParams.get("page"), 1);
+    const limit = positiveInt(url.searchParams.get("limit"), 25, 100);
+    const search = url.searchParams.get("search")?.trim();
+    const statusParam = url.searchParams.get("status")?.trim().toLowerCase();
+    const status =
+      statusParam === "all"
+        ? undefined
+        : statusParam === "active" || statusParam === "suspended"
+          ? statusParam
+          : url.searchParams.get("isActive") === "false"
+            ? undefined
+            : "active";
+    const tierParam = url.searchParams.get("tier")?.trim().toLowerCase();
+    const tier = tierParam && tierParam !== "all" ? (tierParam as PricingTier) : undefined;
+    const where: Prisma.clientsWhereInput = {
+      status,
+      pricing_tier_override: tier,
+      soft_deleted_at: null,
+      ...(search
+        ? {
+            OR: [
+              { company_name: { contains: search, mode: "insensitive" } },
+              { contact_name: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+              { phone: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+    const [clients, total] = await Promise.all([
+      prisma.clients.findMany({
+        where,
+        include: {
+          _count: { select: { users: true } },
+          shipments: { orderBy: { created_at: "desc" }, take: 1, select: { created_at: true } },
+        },
+        orderBy: { created_at: "desc" },
+        ...(hasPagination ? { skip: (page - 1) * limit, take: limit } : {}),
+      }),
+      hasPagination ? prisma.clients.count({ where }) : Promise.resolve(0),
+    ]);
+
+    if (hasPagination) {
+      return success({
+        clients,
+        rows: clients,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      });
+    }
+
     return success(clients);
   } catch (err) {
     return handleApiError(err);

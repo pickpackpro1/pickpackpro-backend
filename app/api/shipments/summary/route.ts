@@ -231,7 +231,7 @@ export async function GET(req: Request) {
       };
     });
 
-    return success({ rows: summaries, total, page, limit, view: "summary" });
+    return success({ rows: summaries, total, page, limit, totalPages: Math.ceil(total / limit), view: "summary" });
   } catch (err) {
     return handleApiError(err);
   }
