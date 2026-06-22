@@ -97,6 +97,15 @@ function getPricingTier(client: { pricing_tier_override: PricingTierName | strin
   return totalUnits >= 5000 ? "platinum" : totalUnits >= 2000 ? "gold" : "silver";
 }
 
+function clientPriceForService(prices: ClientPriceEntry[], serviceCode: string, tier: string) {
+  const normalizedServiceCode = normalizeServiceCode(serviceCode);
+  return (
+    prices.find((price) => normalizeServiceCode(price.service_code) === normalizedServiceCode && price.tier === tier) ??
+    prices.find((price) => normalizeServiceCode(price.service_code) === normalizedServiceCode && !price.tier) ??
+    null
+  );
+}
+
 function lineAmounts(qty: number, unitRate: number, vatRate: number) {
   const amount = qty * unitRate;
   const vatAmount = amount * vatRate;
@@ -287,7 +296,7 @@ function buildServiceLines(input: {
 
       const svc = input.catalogByCode.get(serviceCode);
       const billingServiceCode = svc?.code ?? serviceCode;
-      const custom = input.prices.find((price) => normalizeServiceCode(price.service_code) === serviceCode && (!price.tier || price.tier === input.tier));
+      const custom = clientPriceForService(input.prices, serviceCode, input.tier);
       const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, input.tier));
       const vatRate = input.clientVatRegistered && svc?.vat_applicable ? 0.2 : 0;
       const { amount, vatAmount } = lineAmounts(item.quantity, unitRate, vatRate);
@@ -334,7 +343,7 @@ function buildBoxLines(input: {
     const normalizedServiceCode = normalizeServiceCode(serviceCode);
     const svc = input.catalogByCode.get(normalizedServiceCode);
     const billingServiceCode = svc?.code ?? normalizedServiceCode;
-    const custom = input.prices.find((price) => normalizeServiceCode(price.service_code) === normalizedServiceCode && (!price.tier || price.tier === input.tier));
+    const custom = clientPriceForService(input.prices, normalizedServiceCode, input.tier);
     const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, input.tier));
     const vatRate = input.clientVatRegistered && svc?.vat_applicable ? 0.2 : 0;
     const { amount, vatAmount } = lineAmounts(1, unitRate, vatRate);

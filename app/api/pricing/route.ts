@@ -7,10 +7,10 @@ import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
 const schema = z.object({
-  clientId: z.string().uuid().optional(),
-  tier: z.nativeEnum(PricingTier).optional(),
+  clientId: z.string().uuid().optional().nullable(),
+  tier: z.nativeEnum(PricingTier).optional().nullable(),
   serviceType: z.string().min(1),
-  pricePerUnit: z.number().nonnegative(),
+  pricePerUnit: z.coerce.number().nonnegative(),
   effectiveFrom: z.coerce.date().optional(),
   notes: z.string().optional().nullable(),
 });
@@ -41,18 +41,35 @@ export async function POST(req: Request) {
     const body = await json(req, schema);
     const serviceType = normalizeServiceCode(body.serviceType);
     if (body.clientId) {
-      const price = await prisma.client_price_lists.create({
-        data: {
+      const tier = body.tier ?? null;
+      const existingPrice = await prisma.client_price_lists.findFirst({
+        where: {
           client_id: body.clientId,
           service_code: serviceType,
-          tier: body.tier,
-          rate: body.pricePerUnit,
-          effective_from: body.effectiveFrom ?? new Date(),
-          notes: body.notes ?? null,
-          created_by: user.userId,
+          tier,
         },
+        select: { id: true },
       });
-      return success(price, 201);
+      const data = {
+        rate: body.pricePerUnit,
+        effective_from: body.effectiveFrom ?? new Date(),
+        notes: body.notes ?? null,
+      };
+      const price = existingPrice
+        ? await prisma.client_price_lists.update({
+            where: { id: existingPrice.id },
+            data,
+          })
+        : await prisma.client_price_lists.create({
+            data: {
+              ...data,
+              client_id: body.clientId,
+              service_code: serviceType,
+              tier,
+              created_by: user.userId,
+            },
+          });
+      return success(price, existingPrice ? 200 : 201);
     }
     const existingService = await prisma.service_catalog.findUnique({
       where: { code: serviceType },
