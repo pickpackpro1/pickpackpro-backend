@@ -70,10 +70,14 @@ function metadataFromForm(form: FormData) {
   const sku = optionalText(form.get("sku"));
   const fnsku = optionalText(form.get("fnsku")) ?? optionalText(form.get("fnskuLabel")) ?? optionalText(form.get("fnsku_label"));
   const productName = optionalText(form.get("productName")) ?? optionalText(form.get("product_name"));
+  const purpose = optionalText(form.get("purpose"));
+  const label = optionalText(form.get("label"));
 
   return JSON.parse(
     JSON.stringify({
       ...metadata,
+      ...(purpose ? { purpose } : {}),
+      ...(label ? { label } : {}),
       ...(draftItemId ? { draftItemId, draft_item_id: draftItemId } : {}),
       ...(itemIndex != null ? { itemIndex, item_index: itemIndex } : {}),
       ...(lineItemIndex != null ? { lineItemIndex, line_item_index: lineItemIndex } : {}),

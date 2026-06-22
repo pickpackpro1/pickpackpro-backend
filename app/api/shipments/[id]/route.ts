@@ -13,6 +13,7 @@ import {
 } from "@/lib/shipmentDrafts";
 import { serializeShipment, serializeUploadedFile, shipmentContractInclude } from "@/lib/shipmentContract";
 import { PRODUCT_FNSKU_LABEL_ENTITY_TYPE } from "@/lib/productFnskuLabels";
+import { serializeShipmentNoteAttachments } from "@/lib/shipmentNoteAttachments";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 import { json } from "@/lib/validation";
 
@@ -32,18 +33,31 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     });
     if (!shipment) throw new ApiError("Shipment not found", 404);
     if (user.role === "client") await requireClientAccess(req, shipment.client_id);
-    const draftFiles = await prisma.uploaded_files.findMany({
-      where: {
-        linked_entity_type: { in: DRAFT_FNSKU_ENTITY_TYPES },
-        linked_entity_id: shipment.id,
-      },
-      orderBy: { uploaded_at: "desc" },
-    });
+    const [draftFiles, shipmentFiles] = await Promise.all([
+      prisma.uploaded_files.findMany({
+        where: {
+          linked_entity_type: { in: DRAFT_FNSKU_ENTITY_TYPES },
+          linked_entity_id: shipment.id,
+        },
+        orderBy: { uploaded_at: "desc" },
+      }),
+      prisma.uploaded_files.findMany({
+        where: {
+          linked_entity_type: "shipment",
+          linked_entity_id: shipment.id,
+          file_type: "other",
+        },
+        orderBy: { uploaded_at: "desc" },
+      }),
+    ]);
     const serializedDraftFiles = draftFiles.map(serializeUploadedFile).filter(Boolean);
+    const noteAttachments = serializeShipmentNoteAttachments(shipmentFiles);
     return success({
       ...serializeShipment(shipment),
       draftFiles: serializedDraftFiles,
       draft_files: serializedDraftFiles,
+      noteAttachments,
+      note_attachments: noteAttachments,
     });
   } catch (err) {
     return handleApiError(err);

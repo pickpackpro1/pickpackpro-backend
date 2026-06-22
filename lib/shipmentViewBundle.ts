@@ -4,6 +4,7 @@ import { normalizeServiceCode } from "@/lib/businessLogic";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { serializeUploadedFile } from "@/lib/shipmentContract";
+import { serializeShipmentNoteAttachments } from "@/lib/shipmentNoteAttachments";
 import { getSubShipmentAvailability } from "@/lib/subShipments";
 
 type JsonRecord = Record<string, any>;
@@ -1037,6 +1038,9 @@ export async function getShipmentViewBundle(
       ]).filter(Boolean),
     ];
     const fileIndex = buildFileIndex([...relatedFiles, ...relationFiles]);
+    const noteAttachments = serializeShipmentNoteAttachments(
+      fileIndex.filesByEntity.get(entityKey("shipment", shipment.id)) ?? [],
+    );
     const catalogByCode = new Map(catalogRows.map((row) => [normalizeServiceCode(row.code), row as JsonRecord]));
     const lineItemsById = new Map(shipment.shipment_line_items.map((item) => [item.id, item as JsonRecord]));
     const serializedLineItems = shipment.shipment_line_items.map((item, index) => serializeLineItem(item as JsonRecord, index, fileIndex));
@@ -1110,6 +1114,8 @@ export async function getShipmentViewBundle(
       invoice_count: invoices.length,
       fileCount: fileIndex.files.length,
       file_count: fileIndex.files.length,
+      noteAttachmentCount: noteAttachments.length,
+      note_attachment_count: noteAttachments.length,
     };
     const activeCheckIns = shipment.staff_check_ins.filter((checkIn) => !checkIn.checked_out_at);
     const shipmentPayload = {
@@ -1150,6 +1156,8 @@ export async function getShipmentViewBundle(
       notes: shipment.client_notes,
       clientNotes: shipment.client_notes,
       client_notes: shipment.client_notes,
+      noteAttachments,
+      note_attachments: noteAttachments,
       draftPayload: shipment.draft_payload,
       draft_payload: shipment.draft_payload,
       draftSavedAt: shipment.draft_saved_at,
@@ -1216,6 +1224,8 @@ export async function getShipmentViewBundle(
       files: fileIndex.files,
       filesByEntity: Object.fromEntries(fileIndex.filesByEntity.entries()),
       files_by_entity: Object.fromEntries(fileIndex.filesByEntity.entries()),
+      noteAttachments,
+      note_attachments: noteAttachments,
       permissions: buildPermissions(user.role, shipment.status),
       assignableUsers: normalizedAssignableUsers,
       assignable_users: normalizedAssignableUsers,
