@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const RECEIVING_STATUSES: ShipmentStatus[] = [ShipmentStatus.submitted, ShipmentStatus.pending_arrival];
+type ReceivingQueueStatus = "all" | "submitted" | "pending_arrival" | "received";
 
 function positiveInt(value: string | null, fallback: number, max?: number) {
   const parsed = Number(value ?? fallback);
@@ -13,13 +14,63 @@ function positiveInt(value: string | null, fallback: number, max?: number) {
   return max ? Math.min(parsed, max) : parsed;
 }
 
-function parseStatus(value: string | null) {
+function parseStatus(value: string | null): ReceivingQueueStatus {
   const normalized = String(value ?? "all").trim().toLowerCase();
-  if (!normalized || normalized === "all") return { in: RECEIVING_STATUSES };
-  if (normalized === ShipmentStatus.submitted || normalized === ShipmentStatus.pending_arrival) {
-    return normalized as ShipmentStatus;
+  if (!normalized || normalized === "all") return "all";
+  if (
+    normalized === ShipmentStatus.submitted ||
+    normalized === ShipmentStatus.pending_arrival ||
+    normalized === ShipmentStatus.received
+  ) {
+    return normalized;
   }
   throw new ApiError("Invalid receiving queue status", 400);
+}
+
+function statusWhere(status: ReceivingQueueStatus): Prisma.shipmentsWhereInput {
+  if (status === "all") {
+    return {
+      OR: [
+        { status: { in: RECEIVING_STATUSES } },
+        {
+          status: ShipmentStatus.received,
+          shipment_line_items: { some: { qty_discrepancy_flag: true } },
+        },
+      ],
+    };
+  }
+
+  if (status === ShipmentStatus.received) {
+    return {
+      status: ShipmentStatus.received,
+      shipment_line_items: { some: { qty_discrepancy_flag: true } },
+    };
+  }
+
+  return { status };
+}
+
+function searchWhere(search: string | undefined): Prisma.shipmentsWhereInput | null {
+  if (!search) return null;
+  return {
+    OR: [
+      { reference: { contains: search, mode: "insensitive" } },
+      { clients: { company_name: { contains: search, mode: "insensitive" } } },
+      { clients: { email: { contains: search, mode: "insensitive" } } },
+      {
+        shipment_line_items: {
+          some: {
+            OR: [
+              { product_name: { contains: search, mode: "insensitive" } },
+              { fnsku: { contains: search, mode: "insensitive" } },
+              { products: { sku: { contains: search, mode: "insensitive" } } },
+              { products: { product_name: { contains: search, mode: "insensitive" } } },
+            ],
+          },
+        },
+      },
+    ],
+  };
 }
 
 export async function GET(req: Request) {
@@ -31,34 +82,21 @@ export async function GET(req: Request) {
     const search = url.searchParams.get("search")?.trim();
     const status = parseStatus(url.searchParams.get("status"));
     const clientId = url.searchParams.get("clientId")?.trim() || undefined;
+    const baseConditions = [searchWhere(search)].filter((condition): condition is Prisma.shipmentsWhereInput =>
+      Boolean(condition),
+    );
+    const baseWhere: Prisma.shipmentsWhereInput = {
+      soft_deleted_at: null,
+      client_id: clientId,
+      ...(baseConditions.length ? { AND: baseConditions } : {}),
+    };
     const where: Prisma.shipmentsWhereInput = {
       soft_deleted_at: null,
-      status,
       client_id: clientId,
-      ...(search
-        ? {
-            OR: [
-              { reference: { contains: search, mode: "insensitive" } },
-              { clients: { company_name: { contains: search, mode: "insensitive" } } },
-              { clients: { email: { contains: search, mode: "insensitive" } } },
-              {
-                shipment_line_items: {
-                  some: {
-                    OR: [
-                      { product_name: { contains: search, mode: "insensitive" } },
-                      { fnsku: { contains: search, mode: "insensitive" } },
-                      { products: { sku: { contains: search, mode: "insensitive" } } },
-                      { products: { product_name: { contains: search, mode: "insensitive" } } },
-                    ],
-                  },
-                },
-              },
-            ],
-          }
-        : {}),
+      AND: [...baseConditions, statusWhere(status)],
     };
 
-    const [shipments, total, submittedCount, pendingArrivalCount] = await Promise.all([
+    const [shipments, total, submittedCount, pendingArrivalCount, receivedDiscrepancyCount] = await Promise.all([
       prisma.shipments.findMany({
         where,
         select: {
@@ -90,6 +128,8 @@ export async function GET(req: Request) {
               fnsku: true,
               qty_expected: true,
               qty_received: true,
+              qty_discrepancy_flag: true,
+              discrepancy_notes: true,
               products: {
                 select: {
                   id: true,
@@ -109,14 +149,21 @@ export async function GET(req: Request) {
       prisma.shipments.count({ where }),
       prisma.shipments.count({
         where: {
-          ...where,
+          ...baseWhere,
           status: ShipmentStatus.submitted,
         },
       }),
       prisma.shipments.count({
         where: {
-          ...where,
+          ...baseWhere,
           status: ShipmentStatus.pending_arrival,
+        },
+      }),
+      prisma.shipments.count({
+        where: {
+          ...baseWhere,
+          status: ShipmentStatus.received,
+          shipment_line_items: { some: { qty_discrepancy_flag: true } },
         },
       }),
     ]);
@@ -124,7 +171,9 @@ export async function GET(req: Request) {
     const rows = shipments.map((shipment) => {
       const lineItems = shipment.shipment_line_items.map((item) => {
         const expectedQty = Number(item.qty_expected ?? 0);
-        const receivedQty = item.qty_received === null ? null : Number(item.qty_received);
+        const receivedQty = Number(item.qty_received ?? 0);
+        const remainingQty = Math.max(expectedQty - receivedQty, 0);
+        const differenceQty = receivedQty - expectedQty;
         return {
           id: item.id,
           shipmentItemId: item.id,
@@ -137,10 +186,23 @@ export async function GET(req: Request) {
           expected_qty: expectedQty,
           receivedQty,
           received_qty: receivedQty,
+          remainingQty,
+          remaining_qty: remainingQty,
+          differenceQty,
+          difference_qty: differenceQty,
+          discrepancyFlag: item.qty_discrepancy_flag,
+          discrepancy_flag: item.qty_discrepancy_flag,
+          qtyDiscrepancyFlag: item.qty_discrepancy_flag,
+          qty_discrepancy_flag: item.qty_discrepancy_flag,
+          discrepancyNotes: item.discrepancy_notes,
+          discrepancy_notes: item.discrepancy_notes,
         };
       });
       const totalExpectedQty = lineItems.reduce((sum, item) => sum + item.expectedQty, 0);
       const totalReceivedQty = lineItems.reduce((sum, item) => sum + Number(item.receivedQty ?? 0), 0);
+      const totalRemainingQty = lineItems.reduce((sum, item) => sum + item.remainingQty, 0);
+      const discrepancyCount = lineItems.filter((item) => item.qtyDiscrepancyFlag).length;
+      const receivingComplete = totalRemainingQty === 0 && discrepancyCount === 0;
 
       return {
         id: shipment.id,
@@ -187,6 +249,14 @@ export async function GET(req: Request) {
         total_expected_qty: totalExpectedQty,
         totalReceivedQty,
         total_received_qty: totalReceivedQty,
+        totalRemainingQty,
+        total_remaining_qty: totalRemainingQty,
+        discrepancyCount,
+        discrepancy_count: discrepancyCount,
+        hasOpenDiscrepancy: discrepancyCount > 0,
+        has_open_discrepancy: discrepancyCount > 0,
+        receivingComplete,
+        receiving_complete: receivingComplete,
         units: totalExpectedQty,
       };
     });
@@ -202,6 +272,8 @@ export async function GET(req: Request) {
       submitted_count: submittedCount,
       pendingArrivalCount,
       pending_arrival_count: pendingArrivalCount,
+      receivedDiscrepancyCount,
+      received_discrepancy_count: receivedDiscrepancyCount,
     });
   } catch (err) {
     return handleApiError(err);

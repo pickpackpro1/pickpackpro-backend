@@ -1,3 +1,4 @@
+import { ShipmentStatus } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
@@ -15,6 +16,14 @@ const schema = z
   .refine((body) => body.receivedQty === undefined || body.additionalReceivedQty === undefined, {
     message: "Use either receivedQty or additionalReceivedQty, not both",
   });
+
+function canMoveToReceived(status: ShipmentStatus) {
+  return (
+    status === ShipmentStatus.submitted ||
+    status === ShipmentStatus.pending_arrival ||
+    status === ShipmentStatus.received
+  );
+}
 
 function getAllocatedBoxQty(contents: unknown, shipmentItemId: string) {
   if (!Array.isArray(contents)) return 0;
@@ -79,10 +88,39 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       });
 
       const allItems = await tx.shipment_line_items.findMany({ where: { shipment_id: item.shipment_id } });
-      if (allItems.every((shipmentItem) => shipmentItem.qty_received !== null)) {
+      const totalRemainingQty = allItems.reduce(
+        (sum, shipmentItem) =>
+          sum + Math.max(Number(shipmentItem.qty_expected ?? 0) - Number(shipmentItem.qty_received ?? 0), 0),
+        0,
+      );
+      const receivingComplete =
+        allItems.every((shipmentItem) => shipmentItem.qty_received !== null) &&
+        totalRemainingQty === 0 &&
+        allItems.every((shipmentItem) => !shipmentItem.qty_discrepancy_flag);
+      const shipmentStatus = await tx.shipments.findUnique({
+        where: { id: item.shipment_id },
+        select: { status: true, actual_arrival_date: true },
+      });
+      const canSetReceivedStatus = shipmentStatus && canMoveToReceived(shipmentStatus.status);
+
+      if (receivingComplete && canSetReceivedStatus) {
         await tx.shipments.update({
           where: { id: item.shipment_id },
-          data: { actual_arrival_date: new Date(), updated_at: new Date() },
+          data: {
+            status: ShipmentStatus.received,
+            actual_arrival_date: shipmentStatus.actual_arrival_date ?? new Date(),
+            received_by: user.userId,
+            updated_at: new Date(),
+          },
+        });
+      } else if (allItems.some((shipmentItem) => shipmentItem.qty_received !== null)) {
+        await tx.shipments.update({
+          where: { id: item.shipment_id },
+          data: {
+            actual_arrival_date: shipmentStatus?.actual_arrival_date ?? new Date(),
+            received_by: user.userId,
+            updated_at: new Date(),
+          },
         });
       }
 
@@ -108,6 +146,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         ...updated,
         difference,
         resolved: !stillHasDiscrepancy,
+        totalRemainingQty,
+        total_remaining_qty: totalRemainingQty,
+        receivingComplete,
+        receiving_complete: receivingComplete,
         shipment: serializeShipment(shipment),
       };
     });

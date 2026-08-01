@@ -1,3 +1,4 @@
+import { ShipmentStatus } from "@prisma/client";
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
@@ -6,16 +7,56 @@ import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { json } from "@/lib/validation";
 
+const receiveItemSchema = z
+  .object({
+    shipmentItemId: z.string().uuid(),
+    receivedQty: z.coerce.number().int().min(0).optional(),
+    additionalReceivedQty: z.coerce.number().int().min(0).optional(),
+  })
+  .superRefine((item, ctx) => {
+    if (item.receivedQty === undefined && item.additionalReceivedQty === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["receivedQty"],
+        message: "receivedQty is required",
+      });
+    }
+    if (item.receivedQty !== undefined && item.additionalReceivedQty !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["additionalReceivedQty"],
+        message: "Use either receivedQty or additionalReceivedQty, not both",
+      });
+    }
+  });
+
 const schema = z.object({
-  items: z.array(z.object({ shipmentItemId: z.string().uuid(), receivedQty: z.number().int().min(0) })).min(1),
+  items: z.array(receiveItemSchema).min(1),
 });
+
+function receivedDelta(item: z.infer<typeof receiveItemSchema>) {
+  return item.additionalReceivedQty ?? item.receivedQty ?? 0;
+}
+
+function canMoveToReceived(status: ShipmentStatus) {
+  return (
+    status === ShipmentStatus.submitted ||
+    status === ShipmentStatus.pending_arrival ||
+    status === ShipmentStatus.received
+  );
+}
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
     const user = await requireRole(req, ["admin", "staff"]);
     const body = await json(req, schema);
     const result = await prisma.$transaction(async (tx) => {
-      const discrepancies = [];
+      const shipment = await tx.shipments.findUnique({
+        where: { id: params.id },
+        select: { id: true, status: true, actual_arrival_date: true },
+      });
+      if (!shipment) throw new ApiError("Shipment not found", 404);
+
       for (const received of body.items) {
         const item = await tx.shipment_line_items.findUnique({
           where: { id: received.shipmentItemId },
@@ -23,28 +64,85 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         });
         if (!item || item.shipment_id !== params.id) throw new ApiError("Shipment item not found", 404);
         const bundleSize = item.products.bundle_size ?? 1;
-        const difference = received.receivedQty - item.qty_expected;
-        const updated = await tx.shipment_line_items.update({
+        const nextReceivedQty = (item.qty_received ?? 0) + receivedDelta(received);
+        const difference = nextReceivedQty - item.qty_expected;
+        const hasDiscrepancy = difference !== 0;
+        await tx.shipment_line_items.update({
           where: { id: item.id },
           data: {
-            qty_received: received.receivedQty,
-            dispatch_qty: calculateDispatchQty(received.receivedQty, bundleSize),
-            qty_discrepancy_flag: difference !== 0,
-            discrepancy_notes: difference !== 0 ? `Expected ${item.qty_expected}, received ${received.receivedQty}` : item.discrepancy_notes,
+            qty_received: nextReceivedQty,
+            dispatch_qty: calculateDispatchQty(nextReceivedQty, bundleSize),
+            qty_discrepancy_flag: hasDiscrepancy,
+            discrepancy_notes: hasDiscrepancy ? `Expected ${item.qty_expected}, received ${nextReceivedQty}` : null,
             updated_at: new Date(),
           },
         });
-        if (difference !== 0) discrepancies.push({ ...updated, difference });
       }
+
       const allItems = await tx.shipment_line_items.findMany({ where: { shipment_id: params.id } });
-      const allReceived = allItems.every((item) => item.qty_received !== null);
-      if (allReceived) {
+      const lineItems = allItems.map((item) => {
+        const expectedQty = Number(item.qty_expected ?? 0);
+        const receivedQty = Number(item.qty_received ?? 0);
+        const remainingQty = Math.max(expectedQty - receivedQty, 0);
+        const difference = receivedQty - expectedQty;
+        return {
+          ...item,
+          expectedQty,
+          expected_qty: expectedQty,
+          receivedQty,
+          received_qty: receivedQty,
+          remainingQty,
+          remaining_qty: remainingQty,
+          difference,
+          differenceQty: difference,
+          difference_qty: difference,
+        };
+      });
+      const totalExpectedQty = lineItems.reduce((sum, item) => sum + item.expectedQty, 0);
+      const totalReceivedQty = lineItems.reduce((sum, item) => sum + item.receivedQty, 0);
+      const totalRemainingQty = lineItems.reduce((sum, item) => sum + item.remainingQty, 0);
+      const discrepancies = lineItems.filter((item) => item.qty_discrepancy_flag);
+      const receivingComplete =
+        allItems.every((item) => item.qty_received !== null) &&
+        totalRemainingQty === 0 &&
+        discrepancies.length === 0;
+      const canSetReceivedStatus = canMoveToReceived(shipment.status);
+
+      if (receivingComplete && canSetReceivedStatus) {
         await tx.shipments.update({
           where: { id: params.id },
-          data: { status: "received", actual_arrival_date: new Date(), received_by: user.userId, updated_at: new Date() },
+          data: {
+            status: ShipmentStatus.received,
+            actual_arrival_date: shipment.actual_arrival_date ?? new Date(),
+            received_by: user.userId,
+            updated_at: new Date(),
+          },
+        });
+      } else {
+        await tx.shipments.update({
+          where: { id: params.id },
+          data: {
+            actual_arrival_date: shipment.actual_arrival_date ?? new Date(),
+            received_by: user.userId,
+            updated_at: new Date(),
+          },
         });
       }
-      return { discrepancies, status: allReceived ? "received" : undefined };
+
+      return {
+        discrepancies,
+        lineItems,
+        line_items: lineItems,
+        totalExpectedQty,
+        total_expected_qty: totalExpectedQty,
+        totalReceivedQty,
+        total_received_qty: totalReceivedQty,
+        totalRemainingQty,
+        total_remaining_qty: totalRemainingQty,
+        receivingComplete,
+        receiving_complete: receivingComplete,
+        status: receivingComplete && canSetReceivedStatus ? ShipmentStatus.received : shipment.status,
+      };
     });
     await prisma.audit_logs.create({
       data: {
@@ -66,19 +164,20 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         where: { client_id: shipment.client_id, role: "client" },
       });
       if (clientUser) {
+        const hasReceivingIssue = !result.receivingComplete || result.discrepancies.length > 0;
         await prisma.notifications.create({
           data: {
             user_id: clientUser.id,
-            type: result.discrepancies.length > 0 ? "discrepancy_flagged" : "shipment_received",
-            title: result.discrepancies.length > 0 ? "Discrepancy Flagged" : "Shipment Received",
-            body: result.discrepancies.length > 0
+            type: hasReceivingIssue ? "discrepancy_flagged" : "shipment_received",
+            title: hasReceivingIssue ? "Discrepancy Flagged" : "Shipment Received",
+            body: hasReceivingIssue
               ? `Discrepancy found in shipment ${shipment.reference}.`
               : `Your shipment ${shipment.reference} has been received at the warehouse.`,
             link_url: `/shipments/${params.id}`,
           },
         });
         try {
-          if (result.discrepancies.length > 0) {
+          if (hasReceivingIssue) {
             await sendEmail({
               to: clientUser.email,
               subject: `Discrepancy Found — ${shipment.reference}`,
