@@ -5,8 +5,15 @@ import { prisma } from "@/lib/prisma";
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
-const RECEIVING_STATUSES: ShipmentStatus[] = [ShipmentStatus.submitted, ShipmentStatus.pending_arrival];
-type ReceivingQueueStatus = "all" | "submitted" | "pending_arrival" | "received";
+const RECEIVING_QUEUE_STATUSES: ShipmentStatus[] = [
+  ShipmentStatus.submitted,
+  ShipmentStatus.pending_arrival,
+  ShipmentStatus.received,
+  ShipmentStatus.in_progress,
+  ShipmentStatus.prepped,
+  ShipmentStatus.dispatched,
+];
+type ReceivingQueueStatus = "all" | "submitted" | "pending_arrival" | "received" | "in_progress" | "prepped" | "dispatched";
 
 function positiveInt(value: string | null, fallback: number, max?: number) {
   const parsed = Number(value ?? fallback);
@@ -17,37 +24,32 @@ function positiveInt(value: string | null, fallback: number, max?: number) {
 function parseStatus(value: string | null): ReceivingQueueStatus {
   const normalized = String(value ?? "all").trim().toLowerCase();
   if (!normalized || normalized === "all") return "all";
-  if (
-    normalized === ShipmentStatus.submitted ||
-    normalized === ShipmentStatus.pending_arrival ||
-    normalized === ShipmentStatus.received
-  ) {
-    return normalized;
-  }
+  if (RECEIVING_QUEUE_STATUSES.includes(normalized as ShipmentStatus)) return normalized as ReceivingQueueStatus;
   throw new ApiError("Invalid receiving queue status", 400);
+}
+
+function openReceivingLineItemWhere(): Prisma.shipment_line_itemsWhereInput {
+  return {
+    OR: [
+      { qty_received: null },
+      { qty_discrepancy_flag: true },
+      { qty_received: { lt: prisma.shipment_line_items.fields.qty_expected } },
+    ],
+  };
 }
 
 function statusWhere(status: ReceivingQueueStatus): Prisma.shipmentsWhereInput {
   if (status === "all") {
     return {
-      OR: [
-        { status: { in: RECEIVING_STATUSES } },
-        {
-          status: ShipmentStatus.received,
-          shipment_line_items: { some: { qty_discrepancy_flag: true } },
-        },
-      ],
+      status: { in: RECEIVING_QUEUE_STATUSES },
+      shipment_line_items: { some: openReceivingLineItemWhere() },
     };
   }
 
-  if (status === ShipmentStatus.received) {
-    return {
-      status: ShipmentStatus.received,
-      shipment_line_items: { some: { qty_discrepancy_flag: true } },
-    };
-  }
-
-  return { status };
+  return {
+    status,
+    shipment_line_items: { some: openReceivingLineItemWhere() },
+  };
 }
 
 function searchWhere(search: string | undefined): Prisma.shipmentsWhereInput | null {
@@ -151,19 +153,21 @@ export async function GET(req: Request) {
         where: {
           ...baseWhere,
           status: ShipmentStatus.submitted,
+          shipment_line_items: { some: openReceivingLineItemWhere() },
         },
       }),
       prisma.shipments.count({
         where: {
           ...baseWhere,
           status: ShipmentStatus.pending_arrival,
+          shipment_line_items: { some: openReceivingLineItemWhere() },
         },
       }),
       prisma.shipments.count({
         where: {
           ...baseWhere,
           status: ShipmentStatus.received,
-          shipment_line_items: { some: { qty_discrepancy_flag: true } },
+          shipment_line_items: { some: openReceivingLineItemWhere() },
         },
       }),
     ]);
