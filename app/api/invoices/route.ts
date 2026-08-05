@@ -1,6 +1,7 @@
 import { InvoiceStatus, InvoiceType, Prisma } from "@prisma/client";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole, requireUser } from "@/lib/auth";
+import { finalInvoiceDates } from "@/lib/invoicing";
 import { prisma } from "@/lib/prisma";
 import { generateInvoiceNumber, invoiceMonthKey } from "@/lib/referenceGen";
 import { json } from "@/lib/validation";
@@ -54,16 +55,6 @@ function normalizeCategory(value: string | null) {
   if (!normalized || normalized === "all") return undefined;
   if (normalized === "client" || normalized === "dispatch") return normalized;
   throw new ApiError("Invalid invoice category", 400);
-}
-
-function addMonths(date: Date, months: number) {
-  const next = new Date(date);
-  next.setMonth(next.getMonth() + months);
-  return next;
-}
-
-function clientInvoiceDueDate(invoiceDate: Date) {
-  return addMonths(invoiceDate, 1);
 }
 
 function isClientInvoiceType(type: InvoiceType | string | null | undefined) {
@@ -421,12 +412,13 @@ export async function POST(req: Request) {
     const lines = clientInvoiceLinesFromBody(body);
     const total = lines.reduce((sum, line) => sum + Number(line.amount), 0);
     const invoiceDate = body.invoiceDate;
+    const { dueDate } = await finalInvoiceDates(prisma, invoiceDate);
     const invoice = await createClientInvoiceWithNumber({
       client_id: body.clientId,
       shipment_id: null,
       sub_shipment_id: null,
       invoice_date: invoiceDate,
-      due_date: clientInvoiceDueDate(invoiceDate),
+      due_date: dueDate,
       invoice_type: body.invoiceType,
       status: InvoiceStatus.draft,
       subtotal: total,
