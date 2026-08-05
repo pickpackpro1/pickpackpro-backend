@@ -5,7 +5,7 @@ import { generateInvoiceNumber, invoiceMonthKey } from "./referenceGen";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type DispatchInvoiceWhere = { shipmentId?: string; subShipmentId?: string };
-type InvoiceCreateData = Omit<Prisma.invoicesUncheckedCreateInput, "invoice_number">;
+type DispatchInvoiceCreateData = Omit<Prisma.invoicesUncheckedCreateInput, "invoice_number" | "invoice_line_items">;
 
 type BillableLineItem = {
   id: string;
@@ -39,12 +39,27 @@ type ClientPriceEntry = {
   rate: Prisma.Decimal | number | string;
 };
 
-type InvoiceLineCreate = Prisma.invoice_line_itemsCreateWithoutInvoicesInput;
+type SystemInvoiceLine = {
+  shipment_id: string;
+  sub_shipment_id: string | null;
+  shipment_line_item_id: string | null;
+  service_code: string;
+  description: string;
+  qty: number;
+  unit_rate: number;
+  amount: number;
+  vat_rate: number;
+  vat_amount: number;
+  line_source: "system";
+  sort_order: number;
+};
 
 const invoiceInclude = {
   clients: true,
   invoice_line_items: { orderBy: { sort_order: "asc" } },
 } satisfies Prisma.invoicesInclude;
+
+type DispatchInvoiceRecord = Prisma.invoicesGetPayload<{ include: typeof invoiceInclude }>;
 
 const MAX_INVOICE_NUMBER_ATTEMPTS = 5;
 const DEFAULT_INVOICE_PAYMENT_TERMS_DAYS = 14;
@@ -280,7 +295,7 @@ function buildServiceLines(input: {
   prices: ClientPriceEntry[];
   startSortOrder: number;
 }) {
-  const lines: InvoiceLineCreate[] = [];
+  const lines: SystemInvoiceLine[] = [];
   let sortOrder = input.startSortOrder;
 
   for (const item of input.items) {
@@ -332,7 +347,7 @@ function buildBoxLines(input: {
   prices: ClientPriceEntry[];
   startSortOrder: number;
 }) {
-  const lines: InvoiceLineCreate[] = [];
+  const lines: SystemInvoiceLine[] = [];
   let sortOrder = input.startSortOrder;
 
   for (const box of input.boxes) {
@@ -367,7 +382,7 @@ function buildBoxLines(input: {
   return lines;
 }
 
-function totalsFor(lines: InvoiceLineCreate[]) {
+function totalsFor(lines: Array<{ amount: Prisma.Decimal | number | string; vat_amount: Prisma.Decimal | number | string }>) {
   const subtotal = lines.reduce((sum, line) => sum + Number(line.amount), 0);
   const vatAmount = lines.reduce((sum, line) => sum + Number(line.vat_amount), 0);
   return { subtotal, vatAmount, total: subtotal + vatAmount };
@@ -412,17 +427,72 @@ function isInvoiceNumberCollision(err: unknown) {
   return String(target ?? "").includes("invoice_number");
 }
 
-async function createDispatchInvoice(prisma: Db, where: DispatchInvoiceWhere, invoiceDate: Date, data: InvoiceCreateData) {
+function systemLineCreateManyData(invoiceId: string, lines: SystemInvoiceLine[]): Prisma.invoice_line_itemsCreateManyInput[] {
+  return lines.map((line) => ({
+    ...line,
+    invoice_id: invoiceId,
+  }));
+}
+
+async function refreshDispatchInvoice(
+  prisma: Db,
+  existing: DispatchInvoiceRecord,
+  data: DispatchInvoiceCreateData,
+  systemLines: SystemInvoiceLine[],
+) {
+  const preservedLines = existing.invoice_line_items.filter((line) => line.line_source !== "system");
+  const totals = totalsFor([...systemLines, ...preservedLines]);
+
+  await prisma.invoice_line_items.deleteMany({
+    where: { invoice_id: existing.id, line_source: "system" },
+  });
+  if (systemLines.length) {
+    await prisma.invoice_line_items.createMany({
+      data: systemLineCreateManyData(existing.id, systemLines),
+    });
+  }
+  await Promise.all(
+    preservedLines.map((line, index) =>
+      prisma.invoice_line_items.update({
+        where: { id: line.id },
+        data: { sort_order: systemLines.length + index + 1 },
+      }),
+    ),
+  );
+
+  return prisma.invoices.update({
+    where: { id: existing.id },
+    data: {
+      client_id: data.client_id,
+      shipment_id: data.shipment_id ?? null,
+      sub_shipment_id: data.sub_shipment_id ?? null,
+      invoice_type: data.invoice_type,
+      subtotal: totals.subtotal,
+      vat_amount: totals.vatAmount,
+      total: totals.total,
+    },
+    include: invoiceInclude,
+  });
+}
+
+async function saveDispatchInvoice(
+  prisma: Db,
+  where: DispatchInvoiceWhere,
+  invoiceDate: Date,
+  data: DispatchInvoiceCreateData,
+  systemLines: SystemInvoiceLine[],
+) {
   return withInvoiceCreationLock(prisma, invoiceDate, async (tx) => {
     for (let attempt = 0; attempt < MAX_INVOICE_NUMBER_ATTEMPTS; attempt++) {
       const existing = await existingDispatchInvoice(tx, where);
-      if (existing) return existing;
+      if (existing) return refreshDispatchInvoice(tx, existing, data, systemLines);
 
       try {
         return await tx.invoices.create({
           data: {
             ...data,
             invoice_number: await generateInvoiceNumber(tx, invoiceDate),
+            invoice_line_items: systemLines.length ? { create: systemLines } : undefined,
           },
           include: invoiceInclude,
         });
@@ -432,15 +502,12 @@ async function createDispatchInvoice(prisma: Db, where: DispatchInvoiceWhere, in
     }
 
     const existing = await existingDispatchInvoice(tx, where);
-    if (existing) return existing;
+    if (existing) return refreshDispatchInvoice(tx, existing, data, systemLines);
     throw new ApiError("Could not generate a unique invoice number. Please try again.", 409);
   });
 }
 
 export async function ensureShipmentDraftInvoice(prisma: Db, shipmentId: string, createdBy: string) {
-  const existing = await existingDispatchInvoice(prisma, { shipmentId });
-  if (existing) return existing;
-
   const shipment = await prisma.shipments.findUnique({
     where: { id: shipmentId, soft_deleted_at: null },
     include: {
@@ -492,7 +559,7 @@ export async function ensureShipmentDraftInvoice(prisma: Db, shipmentId: string,
   const now = new Date();
   const { invoiceDate, dueDate } = await finalInvoiceDates(prisma, now);
 
-  return createDispatchInvoice(prisma, { shipmentId }, invoiceDate, {
+  return saveDispatchInvoice(prisma, { shipmentId }, invoiceDate, {
     client_id: shipment.client_id,
     shipment_id: shipment.id,
     sub_shipment_id: null,
@@ -503,14 +570,10 @@ export async function ensureShipmentDraftInvoice(prisma: Db, shipmentId: string,
     vat_amount: totals.vatAmount,
     total: totals.total,
     created_by: createdBy,
-    invoice_line_items: lines.length ? { create: lines } : undefined,
-  });
+  }, lines);
 }
 
 export async function ensureSubShipmentDraftInvoice(prisma: Db, subShipmentId: string, createdBy: string) {
-  const existing = await existingDispatchInvoice(prisma, { subShipmentId });
-  if (existing) return existing;
-
   const subShipment = await prisma.sub_shipments.findUnique({
     where: { id: subShipmentId },
     include: {
@@ -566,7 +629,7 @@ export async function ensureSubShipmentDraftInvoice(prisma: Db, subShipmentId: s
   const now = new Date();
   const { invoiceDate, dueDate } = await finalInvoiceDates(prisma, now);
 
-  return createDispatchInvoice(prisma, { subShipmentId }, invoiceDate, {
+  return saveDispatchInvoice(prisma, { subShipmentId }, invoiceDate, {
     client_id: subShipment.shipments.client_id,
     shipment_id: subShipment.parent_shipment_id,
     sub_shipment_id: subShipment.id,
@@ -577,6 +640,5 @@ export async function ensureSubShipmentDraftInvoice(prisma: Db, subShipmentId: s
     vat_amount: totals.vatAmount,
     total: totals.total,
     created_by: createdBy,
-    invoice_line_items: lines.length ? { create: lines } : undefined,
-  });
+  }, lines);
 }

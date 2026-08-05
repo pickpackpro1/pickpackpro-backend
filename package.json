@@ -8,6 +8,7 @@
     "start": "next start",
     "prisma:pull": "prisma db pull",
     "prisma:generate": "prisma generate",
+    "dry-run:invoice-refresh": "tsx scripts/invoice-refresh-dry-run.ts",
     "seed": "tsx prisma/seed.ts",
     "typecheck": "tsc --noEmit"
   },
