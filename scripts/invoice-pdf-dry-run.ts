@@ -103,7 +103,11 @@ const pdf = renderInvoicePdf(invoice as any, settings);
 const content = pdf.toString("latin1");
 
 assert(content.startsWith("%PDF-1.4"));
+assert(content.includes("/MediaBox [0 0 1600 620]"));
 for (const expected of [
+  "Pick",
+  "Pack",
+  "Pro",
   "Pick Pack Pro Ltd",
   "GB123456789",
   "Unit 36 Tanners Drive Blakelands Milton",

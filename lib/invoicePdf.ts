@@ -20,12 +20,12 @@ type PdfPage = {
   y: number;
 };
 
-const PAGE_WIDTH = 841.89;
-const PAGE_HEIGHT = 595.28;
-const MARGIN = 28;
+const PAGE_WIDTH = 1600;
+const PAGE_HEIGHT = 620;
+const MARGIN = 20;
 const RIGHT = PAGE_WIDTH - MARGIN;
-const BOTTOM = 34;
-const PAYMENT_HEIGHT = 48;
+const BOTTOM = 24;
+const PAYMENT_HEIGHT = 50;
 const PAYMENT_TOP = BOTTOM + PAYMENT_HEIGHT;
 
 function number(value: number) {
@@ -118,12 +118,12 @@ function formatDate(value: Date | null) {
 }
 
 function addressLines(address: Prisma.JsonValue | null | undefined) {
-  if (typeof address === "string") return wrapText(address, 92, 3).filter(Boolean);
+  if (typeof address === "string") return wrapText(address, 190, 2).filter(Boolean);
   if (Array.isArray(address)) return address.map(text).filter(Boolean);
 
   const data = record(address);
   const fullAddress = firstText(data.fullAddress, data.full_address, data.address, data.formatted);
-  if (fullAddress) return wrapText(fullAddress, 92, 3).filter(Boolean);
+  if (fullAddress) return wrapText(fullAddress, 190, 2).filter(Boolean);
 
   const ordered = [
     firstText(data.line1, data.addressLine1, data.address_line_1, data.address1, data.street),
@@ -133,11 +133,11 @@ function addressLines(address: Prisma.JsonValue | null | undefined) {
     firstText(data.country),
   ].filter(Boolean);
 
-  if (ordered.length) return ordered.flatMap((line) => wrapText(line, 92, 2)).filter(Boolean);
+  if (ordered.length) return ordered.flatMap((line) => wrapText(line, 190, 1)).filter(Boolean);
   return Object.values(data)
     .map(text)
     .filter(Boolean)
-    .flatMap((line) => wrapText(line, 92, 2));
+    .flatMap((line) => wrapText(line, 190, 1));
 }
 
 function bankDetails(bankDetails: Prisma.JsonValue | null | undefined) {
@@ -147,6 +147,27 @@ function bankDetails(bankDetails: Prisma.JsonValue | null | undefined) {
     sortCode: firstText(data.sortCode, data.sort_code, data.sort),
     accountNumber: firstText(data.accountNumber, data.account_number, data.accountNo, data.account_no, data.account),
   };
+}
+
+function brandWords(companyName: string) {
+  const normalized = companyName.toLowerCase().replace(/[^a-z]/g, "");
+  if (normalized.includes("pickpackpro")) return ["Pick", "Pack", "Pro"] as const;
+  return null;
+}
+
+function drawBrand(page: PdfPage, companyName: string) {
+  const words = brandWords(companyName);
+  if (!words) {
+    drawText(page, MARGIN, 580, companyName, 14, "F2", "left", "0.06 0.16 0.30");
+    return;
+  }
+
+  let x = MARGIN;
+  drawText(page, x, 580, words[0], 14, "F2", "left", "0.06 0.16 0.30");
+  x += estimateTextWidth(words[0], 14);
+  drawText(page, x, 580, words[1], 14, "F2", "left", "0.93 0.35 0.13");
+  x += estimateTextWidth(words[1], 14);
+  drawText(page, x, 580, words[2], 14, "F2", "left", "0.06 0.16 0.30");
 }
 
 function createPdf(pages: PdfPage[]) {
@@ -190,75 +211,81 @@ function drawHeader(page: PdfPage, invoice: InvoiceForPdf, settings: SettingsFor
   const companyName = text(settings?.company_name);
   const companyAddress = addressLines(settings?.company_address);
   const vatNumber = text(settings?.vat_number);
-  const paymentTermsDays = Number(settings?.invoice_payment_terms_days);
+  const settingsLine = [companyName, companyAddress.join(" "), vatNumber ? `VAT Number: ${vatNumber}` : ""]
+    .filter(Boolean)
+    .join(" | ");
 
-  drawText(page, MARGIN, 556, companyName, 11, "F2", "left", "0.06 0.16 0.30");
-  let y = 540;
-  for (const line of companyAddress) {
-    drawText(page, MARGIN, y, line, 5.3, "F1", "left", "0.25 0.28 0.34");
-    y -= 8;
-  }
-  if (vatNumber) drawText(page, MARGIN, y - 1, `VAT Number: ${vatNumber}`, 5.3, "F1", "left", "0.25 0.28 0.34");
+  drawBrand(page, companyName);
+  drawText(page, MARGIN, 562, settingsLine, 5.2, "F1", "left", "0.35 0.38 0.44");
 
-  drawText(page, RIGHT, 558, invoice.invoice_number, 9, "F2", "right", "0.06 0.16 0.30");
-  drawText(page, RIGHT, 545, `Invoice Date: ${formatDate(invoice.invoice_date)}`, 5.5, "F1", "right", "0.25 0.28 0.34");
-  drawText(page, RIGHT, 536, `Due: ${formatDate(invoice.due_date)}`, 5.5, "F1", "right", "0.25 0.28 0.34");
-  if (Number.isInteger(paymentTermsDays) && paymentTermsDays > 0) {
-    drawText(page, RIGHT, 527, `Payment Terms: ${paymentTermsDays} days`, 5.5, "F1", "right", "0.25 0.28 0.34");
-  }
+  drawText(page, RIGHT, 580, invoice.invoice_number, 10, "F2", "right", "0.06 0.16 0.30");
+  drawText(page, RIGHT, 566, `Invoice Date: ${formatDate(invoice.invoice_date)}`, 5.6, "F1", "right", "0.35 0.38 0.44");
+  drawText(page, RIGHT, 557, `Due: ${formatDate(invoice.due_date)}`, 5.6, "F1", "right", "0.35 0.38 0.44");
 }
 
 function drawBillTo(page: PdfPage, invoice: InvoiceForPdf, startY: number) {
-  drawText(page, MARGIN, startY, "BILLED TO", 5.8, "F2", "left", "0.48 0.52 0.58");
-  drawText(page, MARGIN, startY - 12, invoice.clients.company_name, 7, "F2", "left", "0.06 0.16 0.30");
-  drawText(page, MARGIN, startY - 22, invoice.clients.email, 5.5, "F1", "left", "0.25 0.28 0.34");
+  drawText(page, MARGIN, startY, "BILLED TO", 5.5, "F2", "left", "0.50 0.54 0.60");
+  drawText(page, MARGIN, startY - 11, invoice.clients.company_name, 7, "F2", "left", "0.06 0.16 0.30");
+  drawText(page, MARGIN, startY - 20, invoice.clients.email, 5.4, "F1", "left", "0.25 0.28 0.34");
 }
 
 function drawTableHeader(page: PdfPage, y: number, isClientInvoice: boolean) {
-  drawFilledRect(page, MARGIN, y - 7, RIGHT - MARGIN, 14);
-  drawText(page, MARGIN + 4, y - 1, "DESCRIPTION", 5.3, "F2", "left", "0.45 0.48 0.54");
-  drawText(page, 617, y - 1, isClientInvoice ? "UNIT" : "QTY", 5.3, "F2", "right", "0.45 0.48 0.54");
-  drawText(page, 695, y - 1, "RATE", 5.3, "F2", "right", "0.45 0.48 0.54");
-  drawText(page, isClientInvoice ? RIGHT : 773, y - 1, "AMOUNT", 5.3, "F2", "right", "0.45 0.48 0.54");
-  if (!isClientInvoice) drawText(page, RIGHT, y - 1, "VAT", 5.3, "F2", "right", "0.45 0.48 0.54");
-  page.y = y - 18;
+  drawFilledRect(page, MARGIN, y - 8, RIGHT - MARGIN, 16, "0.985 0.988 0.994");
+  drawText(page, MARGIN + 8, y - 2, "DESCRIPTION", 5.4, "F2", "left", "0.45 0.48 0.54");
+  drawText(page, 1170, y - 2, isClientInvoice ? "UNIT" : "QTY", 5.4, "F2", "right", "0.45 0.48 0.54");
+  drawText(page, 1315, y - 2, "RATE", 5.4, "F2", "right", "0.45 0.48 0.54");
+  drawText(page, isClientInvoice ? RIGHT : 1465, y - 2, "AMOUNT", 5.4, "F2", "right", "0.45 0.48 0.54");
+  if (!isClientInvoice) drawText(page, RIGHT - 8, y - 2, "VAT", 5.4, "F2", "right", "0.45 0.48 0.54");
+  page.y = y - 24;
 }
 
 function drawTotals(page: PdfPage, invoice: InvoiceForPdf, y: number, isClientInvoice: boolean) {
-  const labelX = 745;
-  const valueX = RIGHT;
+  const labelX = 1445;
+  const valueX = RIGHT - 8;
   let currentY = y;
   if (!isClientInvoice) {
-    drawText(page, labelX, currentY, "Subtotal", 6, "F1", "right");
-    drawText(page, valueX, currentY, formatCurrency(invoice.subtotal), 6, "F1", "right");
-    currentY -= 12;
-    drawText(page, labelX, currentY, "VAT", 6, "F1", "right");
-    drawText(page, valueX, currentY, formatCurrency(invoice.vat_amount), 6, "F1", "right");
-    currentY -= 13;
+    drawText(page, labelX, currentY, "Subtotal", 6.5, "F1", "right");
+    drawText(page, valueX, currentY, formatCurrency(invoice.subtotal), 6.5, "F1", "right");
+    currentY -= 15;
+    drawText(page, labelX, currentY, "VAT", 6.5, "F1", "right");
+    drawText(page, valueX, currentY, formatCurrency(invoice.vat_amount), 6.5, "F1", "right");
+    currentY -= 16;
   }
-  drawText(page, labelX, currentY, "Total", 7.5, "F2", "right");
-  drawText(page, valueX, currentY, formatCurrency(invoice.total), 7.5, "F2", "right");
+  drawText(page, labelX, currentY, "Total", 7.6, "F2", "right");
+  drawText(page, valueX, currentY, formatCurrency(invoice.total), 7.6, "F2", "right");
   page.y = currentY - 18;
 }
 
 function drawPaymentDetails(page: PdfPage, invoice: InvoiceForPdf, settings: SettingsForPdf | null) {
   const bank = bankDetails(settings?.bank_details);
-  drawFilledRect(page, MARGIN, BOTTOM, RIGHT - MARGIN, PAYMENT_HEIGHT, "0.96 0.97 0.99");
-  drawText(page, MARGIN + 6, BOTTOM + PAYMENT_HEIGHT - 12, "Payment - Bank Transfer", 5.8, "F2", "left", "0.06 0.16 0.30");
-  let currentY = BOTTOM + PAYMENT_HEIGHT - 23;
+  const paymentTermsDays = Number(settings?.invoice_payment_terms_days);
+  drawFilledRect(page, MARGIN, BOTTOM, RIGHT - MARGIN, PAYMENT_HEIGHT, "0.975 0.98 0.99");
+  drawText(page, MARGIN + 10, BOTTOM + PAYMENT_HEIGHT - 13, "Payment - Bank Transfer", 5.8, "F2", "left", "0.06 0.16 0.30");
+  if (Number.isInteger(paymentTermsDays) && paymentTermsDays > 0) {
+    drawText(page, RIGHT - 10, BOTTOM + PAYMENT_HEIGHT - 13, `Payment Terms: ${paymentTermsDays} days`, 5.4, "F1", "right", "0.35 0.38 0.44");
+  }
+  let currentY = BOTTOM + PAYMENT_HEIGHT - 25;
   if (bank.bankName) {
-    drawText(page, MARGIN + 6, currentY, `Bank Name: ${bank.bankName}`, 5.3, "F1", "left", "0.25 0.28 0.34");
-    currentY -= 8;
+    drawText(page, MARGIN + 10, currentY, `Bank Name: ${bank.bankName}`, 5.4, "F1", "left", "0.25 0.28 0.34");
+    currentY -= 9;
   }
-  if (bank.sortCode) {
-    drawText(page, MARGIN + 6, currentY, `Sort Code: ${bank.sortCode}`, 5.3, "F1", "left", "0.25 0.28 0.34");
-    currentY -= 8;
+  if (bank.sortCode || bank.accountNumber) {
+    drawText(
+      page,
+      MARGIN + 10,
+      currentY,
+      [
+        bank.sortCode ? `Sort Code: ${bank.sortCode}` : "",
+        bank.accountNumber ? `Account: ${bank.accountNumber}` : "",
+      ].filter(Boolean).join(" | "),
+      5.4,
+      "F1",
+      "left",
+      "0.25 0.28 0.34",
+    );
+    currentY -= 9;
   }
-  if (bank.accountNumber) {
-    drawText(page, MARGIN + 6, currentY, `Account Number: ${bank.accountNumber}`, 5.3, "F1", "left", "0.25 0.28 0.34");
-    currentY -= 8;
-  }
-  drawText(page, MARGIN + 6, currentY, `Reference: ${invoice.invoice_number}`, 5.3, "F1", "left", "0.25 0.28 0.34");
+  drawText(page, MARGIN + 10, currentY, `Reference: ${invoice.invoice_number}`, 5.4, "F1", "left", "0.25 0.28 0.34");
 }
 
 export function renderInvoicePdf(invoice: InvoiceForPdf, settings: SettingsForPdf | null) {
@@ -272,39 +299,39 @@ export function renderInvoicePdf(invoice: InvoiceForPdf, settings: SettingsForPd
     const page: PdfPage = { commands: [], y: 0 };
     pages.push(page);
     if (continued) {
-      drawText(page, MARGIN, 558, `${invoice.invoice_number} continued`, 7.5, "F2", "left", "0.06 0.16 0.30");
-      drawTableHeader(page, 520, isClientInvoice);
+      drawText(page, MARGIN, 580, `${invoice.invoice_number} continued`, 8.2, "F2", "left", "0.06 0.16 0.30");
+      drawTableHeader(page, 540, isClientInvoice);
     }
     return page;
   };
 
   let page = newPage();
   drawHeader(page, invoice, settings);
-  drawBillTo(page, invoice, 500);
-  drawTableHeader(page, 455, isClientInvoice);
+  drawBillTo(page, invoice, 526);
+  drawTableHeader(page, 490, isClientInvoice);
 
   const activeLines = invoice.invoice_line_items.filter((line) => !line.is_suppressed);
   for (const line of activeLines) {
-    const descriptionLines = wrapText(line.description, isClientInvoice ? 116 : 104, 2);
-    const rowHeight = Math.max(13, descriptionLines.length * 8 + 5);
-    if (page.y - rowHeight < PAYMENT_TOP + 70) {
+    const descriptionLines = wrapText(line.description, isClientInvoice ? 210 : 190, 1);
+    const rowHeight = 18;
+    if (page.y - rowHeight < PAYMENT_TOP + 64) {
       page = newPage(true);
     }
 
     const rowTop = page.y;
     descriptionLines.forEach((description, index) => {
-      drawText(page, MARGIN + 4, rowTop - index * 8, description, 5.8, "F1", "left", "0.06 0.16 0.30");
+      drawText(page, MARGIN + 8, rowTop - index * 8, description, 7.2, "F1", "left", "0.06 0.16 0.30");
     });
-    drawText(page, 617, rowTop, Number(line.qty).toString(), 5.8, "F1", "right");
-    drawText(page, 695, rowTop, formatCurrency(line.unit_rate), 5.8, "F1", "right");
-    drawText(page, isClientInvoice ? RIGHT : 773, rowTop, formatCurrency(line.amount), 5.8, "F1", "right");
-    if (!isClientInvoice) drawText(page, RIGHT, rowTop, formatCurrency(line.vat_amount), 5.8, "F1", "right");
-    drawLine(page, MARGIN, rowTop - rowHeight + 4, RIGHT, rowTop - rowHeight + 4);
+    drawText(page, 1170, rowTop, Number(line.qty).toString(), 7, "F1", "right");
+    drawText(page, 1315, rowTop, formatCurrency(line.unit_rate), 7, "F1", "right");
+    drawText(page, isClientInvoice ? RIGHT - 8 : 1465, rowTop, formatCurrency(line.amount), 7, "F1", "right");
+    if (!isClientInvoice) drawText(page, RIGHT - 8, rowTop, formatCurrency(line.vat_amount), 7, "F1", "right");
+    drawLine(page, MARGIN, rowTop - rowHeight + 5, RIGHT, rowTop - rowHeight + 5);
     page.y = rowTop - rowHeight;
   }
 
-  if (page.y < PAYMENT_TOP + 58) page = newPage(true);
-  drawTotals(page, invoice, Math.min(page.y - 12, PAYMENT_TOP + 58), isClientInvoice);
+  if (page.y < PAYMENT_TOP + 56) page = newPage(true);
+  drawTotals(page, invoice, Math.max(page.y - 22, PAYMENT_TOP + 55), isClientInvoice);
   drawPaymentDetails(page, invoice, settings);
 
   return createPdf(pages);
