@@ -31,7 +31,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         outbound_boxes: {
           include: {
             uploaded_files: true,
-            pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+            pallet: { select: { id: true, box_number: true, manual_box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
             sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
             pallet_children: {
               include: {

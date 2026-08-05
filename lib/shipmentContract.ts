@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { boxNumberResponseFields } from "@/lib/boxNumbers";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
 export const shipmentContractInclude = {
@@ -12,7 +13,7 @@ export const shipmentContractInclude = {
   outbound_boxes: {
     include: {
       uploaded_files: true,
-      pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+      pallet: { select: { id: true, box_number: true, manual_box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
       sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
       pallet_children: {
         include: {
@@ -37,7 +38,7 @@ export const shipmentContractInclude = {
       outbound_boxes: {
         include: {
           uploaded_files: true,
-          pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+          pallet: { select: { id: true, box_number: true, manual_box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
           sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
           pallet_children: {
             include: {
@@ -215,8 +216,7 @@ function serializeOutboundBox(box: Record<string, any>, context: { subShipmentRe
   const palletNumber = box.pallet_number ?? null;
   return {
     ...box,
-    boxNumber: box.box_number,
-    box_number: box.box_number,
+    ...boxNumberResponseFields(box),
     palletNumber,
     pallet_number: palletNumber,
     parentPalletNumber: box.pallet?.pallet_number ?? null,

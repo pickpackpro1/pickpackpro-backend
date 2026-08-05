@@ -1,6 +1,7 @@
 import { BoxType, Prisma, ShipmentStatus } from "@prisma/client";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
+import { boxNumberResponseFields, displayBoxTitle } from "@/lib/boxNumbers";
 import { prisma } from "@/lib/prisma";
 import { serializeUploadedFile } from "@/lib/shipmentContract";
 
@@ -183,8 +184,7 @@ function serializeLabelFile(file: unknown) {
 }
 
 function boxTitle(box: JsonRecord) {
-  if (box.box_type === BoxType.pallet) return String(firstPresent(box.pallet_number, `Pallet ${box.box_number}`));
-  return `Box ${box.box_number}`;
+  return displayBoxTitle(box);
 }
 
 function dimensions(box: JsonRecord) {
@@ -213,8 +213,7 @@ function childBoxPayload(box: JsonRecord, lineItemsById: Map<string, JsonRecord>
     id: box.id,
     boxId: box.id,
     box_id: box.id,
-    boxNumber: box.box_number,
-    box_number: box.box_number,
+    ...boxNumberResponseFields(box),
     boxTitle: boxTitle(box),
     box_title: boxTitle(box),
     boxType: box.box_type,
@@ -288,8 +287,7 @@ function buildQueueRow(box: JsonRecord, linkedFilesByEntity: Map<string, JsonRec
 
     boxId: box.id,
     box_id: box.id,
-    boxNumber: box.box_number,
-    box_number: box.box_number,
+    ...boxNumberResponseFields(box),
     boxTitle: boxTitle(box),
     box_title: boxTitle(box),
     boxType: box.box_type,
@@ -407,6 +405,7 @@ function searchWhere(search?: string) {
   return {
     OR: [
       ...numericBoxSearch,
+      { manual_box_number: { contains: search, mode: "insensitive" as const } },
       { pallet_number: { contains: search, mode: "insensitive" as const } },
       { shipments: { reference: { contains: search, mode: "insensitive" as const } } },
       { shipments: { clients: { company_name: { contains: search, mode: "insensitive" as const } } } },
@@ -462,6 +461,7 @@ export async function GET(req: Request) {
           sub_shipment_id: true,
           pallet_id: true,
           box_number: true,
+          manual_box_number: true,
           pallet_number: true,
           box_type: true,
           box_size: true,
@@ -528,6 +528,7 @@ export async function GET(req: Request) {
               sub_shipment_id: true,
               pallet_id: true,
               box_number: true,
+              manual_box_number: true,
               pallet_number: true,
               box_type: true,
               contents: true,

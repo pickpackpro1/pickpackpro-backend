@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ApiError } from "./apiResponse";
+import { boxNumberResponseFields } from "./boxNumbers";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -74,8 +75,7 @@ export function serializeBoxOwnership<T extends PalletRecord>(
 
   return {
     ...box,
-    boxNumber: box.box_number,
-    box_number: box.box_number,
+    ...boxNumberResponseFields(box),
     palletNumber,
     pallet_number: palletNumber,
     parentPalletNumber: context.parentPalletNumber ?? box.pallet?.pallet_number ?? null,

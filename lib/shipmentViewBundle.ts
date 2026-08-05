@@ -1,5 +1,6 @@
 import { BoxType, Prisma } from "@prisma/client";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
+import { boxNumberResponseFields, displayBoxTitle } from "@/lib/boxNumbers";
 import { normalizeServiceCode } from "@/lib/businessLogic";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -260,8 +261,7 @@ function serializeChildBox(
     id: box.id,
     boxId: box.id,
     box_id: box.id,
-    boxNumber: box.box_number,
-    box_number: box.box_number,
+    ...boxNumberResponseFields(box),
     palletNumber: boxPalletNumber(box),
     pallet_number: boxPalletNumber(box),
     parentPalletNumber,
@@ -344,11 +344,10 @@ function serializeBox(
     id: box.id,
     boxId: box.id,
     box_id: box.id,
-    boxNumber: box.box_number,
-    box_number: box.box_number,
+    ...boxNumberResponseFields(box),
     palletNumber,
     pallet_number: palletNumber,
-    title: isPallet ? (palletNumber || `Pallet ${box.box_number}`) : `Box ${box.box_number}`,
+    title: displayBoxTitle(box),
     boxType: box.box_type,
     box_type: box.box_type,
     size: box.box_size,
@@ -875,6 +874,7 @@ export async function getShipmentViewBundle(
             sub_shipment_id: true,
             pallet_id: true,
             box_number: true,
+            manual_box_number: true,
             pallet_number: true,
             box_type: true,
             box_size: true,
@@ -889,7 +889,7 @@ export async function getShipmentViewBundle(
             created_at: true,
             uploaded_files: true,
             pallet: {
-              select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true },
+              select: { id: true, box_number: true, manual_box_number: true, pallet_number: true, box_type: true, dispatched_at: true },
             },
             sub_shipments: {
               select: { id: true, reference: true, status: true, sequence_no: true },

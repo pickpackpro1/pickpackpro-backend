@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { buildValidatedBoxContents, extractBoxAllocationInputs } from "@/lib/boxAllocations";
+import { assertManualBoxNumberAvailable, manualBoxNumberFromBody, normalizeBoxSize, normalizeBoxType } from "@/lib/boxNumbers";
 import { getShipmentBoxesWorkflowState, getSubShipmentBoxesWorkflowState } from "@/lib/boxWorkflowState";
 import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
@@ -9,16 +10,44 @@ import { getSubShipmentAvailability } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const schema = z.object({
-  weight: z.number().nonnegative().optional(),
-  dimensions: z.object({ l: z.number().nonnegative(), w: z.number().nonnegative(), h: z.number().nonnegative() }).optional(),
-  boxType: z.enum(["box", "pallet"]).default("box"),
-  boxSize: z.enum(["small", "medium", "large", "oversize"]).optional(),
+  weight: z.coerce.number().nonnegative().optional(),
+  weightKg: z.coerce.number().nonnegative().optional(),
+  weight_kg: z.coerce.number().nonnegative().optional(),
+  dimensions: z.object({ l: z.coerce.number().nonnegative(), w: z.coerce.number().nonnegative(), h: z.coerce.number().nonnegative() }).optional(),
+  lengthCm: z.coerce.number().nonnegative().optional(),
+  length_cm: z.coerce.number().nonnegative().optional(),
+  widthCm: z.coerce.number().nonnegative().optional(),
+  width_cm: z.coerce.number().nonnegative().optional(),
+  heightCm: z.coerce.number().nonnegative().optional(),
+  height_cm: z.coerce.number().nonnegative().optional(),
+  boxType: z.string().optional().nullable(),
+  box_type: z.string().optional().nullable(),
+  boxSize: z.string().optional().nullable(),
+  box_size: z.string().optional().nullable(),
+  size: z.string().optional().nullable(),
+  boxNumber: z.union([z.string(), z.number()]).optional().nullable(),
+  box_number: z.union([z.string(), z.number()]).optional().nullable(),
+  manualBoxNumber: z.union([z.string(), z.number()]).optional().nullable(),
+  manual_box_number: z.union([z.string(), z.number()]).optional().nullable(),
   subShipmentId: z.string().uuid().optional().nullable(),
+  sub_shipment_id: z.string().uuid().optional().nullable(),
   items: z.array(z.unknown()).optional(),
   boxItems: z.array(z.unknown()).optional(),
   box_items: z.array(z.unknown()).optional(),
   contents: z.array(z.unknown()).optional(),
 });
+
+function normalizedDimensions(body: z.infer<typeof schema>) {
+  return {
+    l: body.dimensions?.l ?? body.lengthCm ?? body.length_cm ?? 0,
+    w: body.dimensions?.w ?? body.widthCm ?? body.width_cm ?? 0,
+    h: body.dimensions?.h ?? body.heightCm ?? body.height_cm ?? 0,
+  };
+}
+
+function normalizedWeight(body: z.infer<typeof schema>) {
+  return body.weight ?? body.weightKg ?? body.weight_kg ?? 0;
+}
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -29,7 +58,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         outbound_boxes: {
           include: {
             uploaded_files: true,
-            pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+            pallet: { select: { id: true, box_number: true, manual_box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
             sub_shipments: { select: { id: true, reference: true, status: true, sequence_no: true } },
             pallet_children: {
               include: {
@@ -83,57 +112,64 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     await requireRole(req, ["admin", "staff"]);
     const includeWorkflow = new URL(req.url).searchParams.get("includeWorkflow") === "true";
     const body = await json(req, schema);
+    const boxType = normalizeBoxType(body.boxType ?? body.box_type);
+    const boxSize = normalizeBoxSize(body.boxSize ?? body.box_size ?? body.size);
+    const subShipmentId = body.subShipmentId ?? body.sub_shipment_id ?? null;
+    const manualBoxNumber = manualBoxNumberFromBody(body);
+    const dims = normalizedDimensions(body);
     const box = await prisma.$transaction(async (tx) => {
-      if (body.boxType === "pallet") {
+      if (boxType === "pallet") {
         throw new ApiError("Use the pallet endpoint to create pallets from selected boxes", 422);
       }
-      if (body.subShipmentId) {
-        const subShipment = await tx.sub_shipments.findUnique({ where: { id: body.subShipmentId } });
+      if (subShipmentId) {
+        const subShipment = await tx.sub_shipments.findUnique({ where: { id: subShipmentId } });
         if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
         if (subShipment.parent_shipment_id !== params.id) throw new ApiError("Sub-shipment does not belong to this shipment", 422);
         if (subShipment.status === "dispatched" || subShipment.status === "completed" || subShipment.status === "cancelled") {
           throw new ApiError("Cannot add boxes to this sub-shipment", 422);
         }
       }
+      await assertManualBoxNumberAvailable(tx, { shipmentId: params.id, subShipmentId, boxNumber: manualBoxNumber });
       const count = await tx.outbound_boxes.count({ where: { shipment_id: params.id } });
       const contents = await buildValidatedBoxContents(tx, {
         shipmentId: params.id,
-        subShipmentId: body.subShipmentId ?? null,
+        subShipmentId,
         rows: extractBoxAllocationInputs(body),
       });
       const created = await tx.outbound_boxes.create({
         data: {
           shipment_id: params.id,
-          sub_shipment_id: body.subShipmentId ?? null,
+          sub_shipment_id: subShipmentId,
           box_number: count + 1,
-          box_type: body.boxType,
-          box_size: body.boxSize,
-          length_cm: body.dimensions?.l ?? 0,
-          width_cm: body.dimensions?.w ?? 0,
-          height_cm: body.dimensions?.h ?? 0,
-          weight_kg: body.weight ?? 0,
+          manual_box_number: manualBoxNumber,
+          box_type: boxType,
+          box_size: boxSize,
+          length_cm: dims.l,
+          width_cm: dims.w,
+          height_cm: dims.h,
+          weight_kg: normalizedWeight(body),
           contents,
         },
       });
-      if (body.subShipmentId) {
+      if (subShipmentId) {
         await tx.sub_shipments.updateMany({
-          where: { id: body.subShipmentId, status: "draft" },
+          where: { id: subShipmentId, status: "draft" },
           data: { status: "awaiting_fba_labels", updated_at: new Date() },
         });
       }
       return created;
     });
     if (includeWorkflow) {
-      if (body.subShipmentId) {
-        const subShipmentBoxes = await getSubShipmentBoxesWorkflowState(prisma, body.subShipmentId);
+      if (subShipmentId) {
+        const subShipmentBoxes = await getSubShipmentBoxesWorkflowState(prisma, subShipmentId);
 
         return success(
           {
-            box,
+            box: serializeBoxOwnership(box),
             workflowPatch: {
               scope: "subShipmentBoxes",
               shipmentId: params.id,
-              subShipmentId: body.subShipmentId,
+              subShipmentId,
               subShipmentBoxes,
             },
           },
@@ -145,7 +181,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
       return success(
         {
-          box,
+          box: serializeBoxOwnership(box),
           workflowPatch: {
             scope: "shipmentBoxes",
             shipmentId: params.id,
@@ -156,7 +192,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         201,
       );
     }
-    return success(box, 201);
+    return success(serializeBoxOwnership(box), 201);
   } catch (err) {
     return handleApiError(err);
   }

@@ -165,6 +165,7 @@ model outbound_boxes {
   sub_shipment_id            String?          @db.Uuid
   pallet_id                  String?          @db.Uuid
   box_number                 Int
+  manual_box_number          String?
   pallet_number              String?
   box_type                   BoxType
   box_size                   BoxSize?

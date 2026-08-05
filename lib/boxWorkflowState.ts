@@ -32,6 +32,7 @@ const childBoxSelect = {
   sub_shipment_id: true,
   pallet_id: true,
   box_number: true,
+  manual_box_number: true,
   pallet_number: true,
   box_type: true,
   box_size: true,
@@ -50,7 +51,7 @@ const childBoxSelect = {
 
 const workflowBoxSelect = {
   ...childBoxSelect,
-  pallet: { select: { id: true, box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
+  pallet: { select: { id: true, box_number: true, manual_box_number: true, pallet_number: true, box_type: true, dispatched_at: true } },
   pallet_children: {
     select: childBoxSelect,
     orderBy: { box_number: "asc" as const },
