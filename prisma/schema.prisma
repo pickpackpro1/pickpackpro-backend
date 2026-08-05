@@ -96,9 +96,15 @@ model invoice_line_items {
   vat_amount            Decimal  @db.Decimal
   line_source           String   @default("system")
   sort_order            Int
+  source_key            String?
+  metadata              Json     @default("{}")
+  is_overridden         Boolean  @default(false)
+  is_suppressed         Boolean  @default(false)
   invoices              invoices @relation(fields: [invoice_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
+  @@index([invoice_id, source_key], map: "idx_invoice_line_items_invoice_source_key")
   @@index([line_source], map: "idx_invoice_line_items_line_source")
+  @@index([invoice_id, is_overridden, is_suppressed], map: "idx_invoice_line_items_overrides")
   @@index([sub_shipment_id], map: "idx_invoice_line_items_sub_shipment_id")
 }
 

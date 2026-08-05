@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { ensureShipmentDraftInvoice } from "../lib/invoicing";
+import { ensureShipmentDraftInvoice, updateInvoiceLine } from "../lib/invoicing";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -71,6 +71,10 @@ type InvoiceLineRecord = {
   vat_amount: number;
   line_source: string;
   sort_order: number;
+  source_key: string | null;
+  metadata: JsonRecord;
+  is_overridden: boolean;
+  is_suppressed: boolean;
 };
 
 type InvoiceLineLike = {
@@ -99,6 +103,12 @@ function serviceQuantity(invoice: InvoiceLike, serviceCode: string) {
   return invoice.invoice_line_items
     .filter((line) => line.line_source === "system" && line.service_code === serviceCode)
     .reduce((sum, line) => sum + Number(line.qty), 0);
+}
+
+function systemLine(invoice: { invoice_line_items: InvoiceLineRecord[] }, serviceCode: string) {
+  const line = invoice.invoice_line_items.find((item) => item.line_source === "system" && item.service_code === serviceCode);
+  assert(line, `Expected system line for ${serviceCode}`);
+  return line;
 }
 
 function assertTotals(invoice: InvoiceLike) {
@@ -214,6 +224,10 @@ class InvoiceRefreshDryRunDb {
       );
       return invoice ? this.serializeInvoice(invoice) : null;
     },
+    findUnique: async (args: any) => {
+      const invoice = this.invoicesStore.find((row) => row.id === args.where.id);
+      return invoice ? this.serializeInvoice(invoice) : null;
+    },
     create: async (args: any) => {
       const invoice: InvoiceRecord = {
         id: randomUUID(),
@@ -237,7 +251,15 @@ class InvoiceRefreshDryRunDb {
       };
       this.invoicesStore.push(invoice);
       for (const line of args.data.invoice_line_items?.create ?? []) {
-        this.invoiceLines.push({ id: randomUUID(), invoice_id: invoice.id, ...line });
+        this.invoiceLines.push({
+          id: randomUUID(),
+          invoice_id: invoice.id,
+          source_key: null,
+          metadata: {},
+          is_overridden: false,
+          is_suppressed: false,
+          ...line,
+        });
       }
       return this.serializeInvoice(invoice);
     },
@@ -250,6 +272,13 @@ class InvoiceRefreshDryRunDb {
   };
 
   readonly invoice_line_items = {
+    findUnique: async (args: any) => this.invoiceLines.find((line) => line.id === args.where.id) ?? null,
+    findMany: async (args: any) =>
+      this.invoiceLines.filter((line) => {
+        if (args.where?.invoice_id !== undefined && line.invoice_id !== args.where.invoice_id) return false;
+        if (args.where?.is_suppressed !== undefined && line.is_suppressed !== args.where.is_suppressed) return false;
+        return true;
+      }),
     deleteMany: async (args: any) => {
       const before = this.invoiceLines.length;
       for (let index = this.invoiceLines.length - 1; index >= 0; index--) {
@@ -262,7 +291,14 @@ class InvoiceRefreshDryRunDb {
     },
     createMany: async (args: any) => {
       for (const line of args.data) {
-        this.invoiceLines.push({ id: randomUUID(), ...line });
+        this.invoiceLines.push({
+          id: randomUUID(),
+          source_key: null,
+          metadata: {},
+          is_overridden: false,
+          is_suppressed: false,
+          ...line,
+        });
       }
       return { count: args.data.length };
     },
@@ -294,6 +330,10 @@ class InvoiceRefreshDryRunDb {
       vat_amount: 0,
       line_source: "manual",
       sort_order: 99,
+      source_key: null,
+      metadata: {},
+      is_overridden: false,
+      is_suppressed: false,
     });
   }
 
@@ -340,6 +380,20 @@ async function main() {
 
   db.addManualLine(firstInvoice.id);
   await db.invoices.update({ where: { id: firstInvoice.id }, data: { status: "sent", sent_at: new Date() } });
+  const sentInvoiceWithManualLine = await db.invoices.findFirst({
+    where: { shipment_id: db.shipmentId, sub_shipment_id: null, invoice_type: "shipment", status: { not: "cancelled" } },
+  });
+  assert(sentInvoiceWithManualLine, "Expected sent invoice in dry-run fake DB");
+  const editedInvoice = await updateInvoiceLine(db as any, firstInvoice.id, systemLine(sentInvoiceWithManualLine, "medium_box").id, {
+    unitRate: 2.5,
+    reason: "Dry-run system line override",
+    updatedBy: db.userId,
+  });
+  assert.equal(editedInvoice.status, "sent");
+  assert.equal(Number(systemLine(editedInvoice as any, "medium_box").unit_rate), 2.5);
+  assert.equal(Number(editedInvoice.subtotal), 31.5);
+  assertTotals(editedInvoice);
+
   db.resolveDiscrepancyAndDispatchSecondBox();
 
   const refreshedInvoice = await ensureShipmentDraftInvoice(db as any, db.shipmentId, db.userId);
@@ -349,8 +403,10 @@ async function main() {
   assert.equal(lineQuantity(refreshedInvoice, db.lineItemIds[1]), 12);
   assert.equal(lineQuantity(refreshedInvoice, db.lineItemIds[2]), 12);
   assert.equal(serviceQuantity(refreshedInvoice, "medium_box"), 2);
+  assert.equal(Number(systemLine(refreshedInvoice as any, "medium_box").unit_rate), 2.5);
+  assert.equal(systemLine(refreshedInvoice as any, "medium_box").is_overridden, true);
   assert.equal(refreshedInvoice.invoice_line_items.filter((line) => line.line_source === "manual").length, 1);
-  assert.equal(refreshedInvoice.invoice_line_items.filter((line) => line.line_source === "system").length, 5);
+  assert.equal(refreshedInvoice.invoice_line_items.filter((line) => line.line_source === "system").length, 4);
   assertTotals(refreshedInvoice);
 
   console.log(
@@ -366,6 +422,7 @@ async function main() {
           sku_3: lineQuantity(refreshedInvoice, db.lineItemIds[2]),
           medium_box: serviceQuantity(refreshedInvoice, "medium_box"),
         },
+        mediumBoxRate: Number(systemLine(refreshedInvoice as any, "medium_box").unit_rate),
         subtotal: refreshedInvoice.subtotal,
         vatAmount: refreshedInvoice.vat_amount,
         total: refreshedInvoice.total,

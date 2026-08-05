@@ -27,6 +27,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       (invoice.invoice_type === "monthly" || invoice.invoice_type === "ad_hoc");
 
     const lineItemsHtml = invoice.invoice_line_items
+      .filter((item) => !item.is_suppressed)
       .map(
         (item) =>
           isClientInvoice

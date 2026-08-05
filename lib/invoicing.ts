@@ -43,6 +43,7 @@ type SystemInvoiceLine = {
   shipment_id: string;
   sub_shipment_id: string | null;
   shipment_line_item_id: string | null;
+  source_key: string;
   service_code: string;
   description: string;
   qty: number;
@@ -52,6 +53,9 @@ type SystemInvoiceLine = {
   vat_amount: number;
   line_source: "system";
   sort_order: number;
+  metadata: Prisma.InputJsonValue;
+  is_overridden: boolean;
+  is_suppressed: boolean;
 };
 
 const invoiceInclude = {
@@ -60,6 +64,28 @@ const invoiceInclude = {
 } satisfies Prisma.invoicesInclude;
 
 type DispatchInvoiceRecord = Prisma.invoicesGetPayload<{ include: typeof invoiceInclude }>;
+type InvoiceLineRecord = DispatchInvoiceRecord["invoice_line_items"][number];
+
+type BaseLineSnapshot = {
+  serviceCode: string;
+  description: string;
+  qty: number;
+  unitRate: number;
+  amount: number;
+  vatRate: number;
+  vatAmount: number;
+};
+
+type OverrideValues = {
+  serviceCode?: string;
+  description?: string;
+  qty?: number;
+  unitRate?: number;
+  vatRate?: number;
+  reason?: string | null;
+  overriddenBy?: string | null;
+  overriddenAt?: string;
+};
 
 const MAX_INVOICE_NUMBER_ATTEMPTS = 5;
 const DEFAULT_INVOICE_PAYMENT_TERMS_DAYS = 14;
@@ -127,8 +153,174 @@ function lineAmounts(qty: number, unitRate: number, vatRate: number) {
   return { amount, vatAmount };
 }
 
+function jsonInput(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function optionalNumber(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function optionalString(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  const text = String(value);
+  return text.trim() ? text : undefined;
+}
+
+function scopePrefix(shipmentId: string | null, subShipmentId: string | null) {
+  return subShipmentId ? `sub_shipment:${subShipmentId}` : `shipment:${shipmentId ?? "none"}`;
+}
+
+function serviceLineSourceKey(shipmentId: string, subShipmentId: string | null, shipmentLineItemId: string, serviceCode: string) {
+  return `${scopePrefix(shipmentId, subShipmentId)}:service:${shipmentLineItemId}:${normalizeServiceCode(serviceCode)}`;
+}
+
+function boxServiceLineSourceKey(shipmentId: string, subShipmentId: string | null, serviceCode: string) {
+  return `${scopePrefix(shipmentId, subShipmentId)}:box_service:${normalizeServiceCode(serviceCode)}`;
+}
+
+function baseSnapshot(line: {
+  service_code: string;
+  description: string;
+  qty: Prisma.Decimal | number | string;
+  unit_rate: Prisma.Decimal | number | string;
+  amount: Prisma.Decimal | number | string;
+  vat_rate: Prisma.Decimal | number | string;
+  vat_amount: Prisma.Decimal | number | string;
+}): BaseLineSnapshot {
+  return {
+    serviceCode: line.service_code,
+    description: line.description,
+    qty: Number(line.qty),
+    unitRate: Number(line.unit_rate),
+    amount: Number(line.amount),
+    vatRate: Number(line.vat_rate),
+    vatAmount: Number(line.vat_amount),
+  };
+}
+
+function metadataBase(metadata: unknown, fallback: BaseLineSnapshot): BaseLineSnapshot {
+  const base = jsonRecord(jsonRecord(metadata).base);
+  return {
+    serviceCode: optionalString(base.serviceCode) ?? optionalString(base.service_code) ?? fallback.serviceCode,
+    description: optionalString(base.description) ?? fallback.description,
+    qty: optionalNumber(base.qty) ?? fallback.qty,
+    unitRate: optionalNumber(base.unitRate) ?? optionalNumber(base.unit_rate) ?? fallback.unitRate,
+    amount: optionalNumber(base.amount) ?? fallback.amount,
+    vatRate: optionalNumber(base.vatRate) ?? optionalNumber(base.vat_rate) ?? fallback.vatRate,
+    vatAmount: optionalNumber(base.vatAmount) ?? optionalNumber(base.vat_amount) ?? fallback.vatAmount,
+  };
+}
+
+function metadataOverride(metadata: unknown): OverrideValues {
+  const override = jsonRecord(jsonRecord(metadata).override);
+  return {
+    serviceCode: optionalString(override.serviceCode) ?? optionalString(override.service_code),
+    description: optionalString(override.description),
+    qty: optionalNumber(override.qty),
+    unitRate: optionalNumber(override.unitRate) ?? optionalNumber(override.unit_rate),
+    vatRate: optionalNumber(override.vatRate) ?? optionalNumber(override.vat_rate),
+    reason: override.reason === undefined ? undefined : override.reason === null ? null : String(override.reason),
+    overriddenBy: override.overriddenBy === undefined && override.overridden_by === undefined
+      ? undefined
+      : String(override.overriddenBy ?? override.overridden_by ?? ""),
+    overriddenAt: optionalString(override.overriddenAt) ?? optionalString(override.overridden_at),
+  };
+}
+
+function effectiveValues(base: BaseLineSnapshot, override: OverrideValues = {}) {
+  const serviceCode = override.serviceCode ?? base.serviceCode;
+  const description = override.description ?? base.description;
+  const qty = override.qty ?? base.qty;
+  const unitRate = override.unitRate ?? base.unitRate;
+  const vatRate = override.vatRate ?? base.vatRate;
+  const { amount, vatAmount } = lineAmounts(qty, unitRate, vatRate);
+  return { serviceCode, description, qty, unitRate, amount, vatRate, vatAmount };
+}
+
+function metadataWithBase(existingMetadata: unknown, base: BaseLineSnapshot, override?: OverrideValues, stale = false) {
+  const metadata = jsonRecord(existingMetadata);
+  return jsonInput({
+    ...metadata,
+    base,
+    ...(override ? { override } : {}),
+    stale,
+  });
+}
+
+function generatedSystemLine(
+  line: Omit<SystemInvoiceLine, "metadata" | "is_overridden" | "is_suppressed">,
+): SystemInvoiceLine {
+  return {
+    ...line,
+    metadata: metadataWithBase({}, baseSnapshot(line)),
+    is_overridden: false,
+    is_suppressed: false,
+  };
+}
+
+function sourceKeyForExistingSystemLine(invoice: DispatchInvoiceRecord, line: InvoiceLineRecord) {
+  if (line.source_key) return line.source_key;
+  if (!invoice.shipment_id) return null;
+  const base = metadataBase(line.metadata, baseSnapshot(line));
+  if (line.shipment_line_item_id) {
+    return serviceLineSourceKey(invoice.shipment_id, line.sub_shipment_id ?? invoice.sub_shipment_id, line.shipment_line_item_id, base.serviceCode);
+  }
+  return boxServiceLineSourceKey(invoice.shipment_id, line.sub_shipment_id ?? invoice.sub_shipment_id, base.serviceCode);
+}
+
+function applyExistingSystemOverride(generatedLine: SystemInvoiceLine, existingLine?: InvoiceLineRecord) {
+  if (!existingLine?.is_overridden) return generatedLine;
+  const base = baseSnapshot(generatedLine);
+  const override = metadataOverride(existingLine.metadata);
+  const effective = effectiveValues(base, override);
+  return {
+    ...generatedLine,
+    service_code: effective.serviceCode,
+    description: effective.description,
+    qty: effective.qty,
+    unit_rate: effective.unitRate,
+    amount: effective.amount,
+    vat_rate: effective.vatRate,
+    vat_amount: effective.vatAmount,
+    metadata: metadataWithBase(existingLine.metadata, base, override),
+    is_overridden: true,
+    is_suppressed: existingLine.is_suppressed,
+  };
+}
+
+function staleOverriddenSystemLine(line: InvoiceLineRecord, sourceKey: string, sortOrder: number, fallbackShipmentId: string | null): SystemInvoiceLine {
+  const base = metadataBase(line.metadata, baseSnapshot(line));
+  const override = metadataOverride(line.metadata);
+  const effective = effectiveValues(base, override);
+  return {
+    shipment_id: line.shipment_id ?? fallbackShipmentId ?? "",
+    sub_shipment_id: line.sub_shipment_id,
+    shipment_line_item_id: line.shipment_line_item_id,
+    source_key: sourceKey,
+    service_code: effective.serviceCode,
+    description: effective.description,
+    qty: effective.qty,
+    unit_rate: effective.unitRate,
+    amount: effective.amount,
+    vat_rate: effective.vatRate,
+    vat_amount: effective.vatAmount,
+    line_source: "system",
+    sort_order: sortOrder,
+    metadata: metadataWithBase(line.metadata, base, override, true),
+    is_overridden: true,
+    is_suppressed: line.is_suppressed,
+  };
+}
+
 export async function recalculateInvoiceTotals(prisma: Db, invoiceId: string) {
-  const lines = await prisma.invoice_line_items.findMany({ where: { invoice_id: invoiceId } });
+  const lines = await prisma.invoice_line_items.findMany({ where: { invoice_id: invoiceId, is_suppressed: false } });
   const subtotal = lines.reduce((sum, line) => sum + Number(line.amount), 0);
   const vatAmount = lines.reduce((sum, line) => sum + Number(line.vat_amount), 0);
   return prisma.invoices.update({
@@ -196,7 +388,7 @@ export async function addManualInvoiceLine(
   return recalculateInvoiceTotals(prisma, invoice.id);
 }
 
-export async function updateManualInvoiceLine(
+export async function updateInvoiceLine(
   prisma: Db,
   invoiceId: string,
   lineItemId: string,
@@ -206,12 +398,54 @@ export async function updateManualInvoiceLine(
     unitRate?: number;
     serviceCode?: string | null;
     vatRate?: number | null;
+    reason?: string | null;
+    updatedBy?: string | null;
   },
 ) {
   const invoice = await assertEditableInvoice(prisma, invoiceId);
   const line = await prisma.invoice_line_items.findUnique({ where: { id: lineItemId } });
   if (!line || line.invoice_id !== invoiceId) throw new ApiError("Invoice line item not found", 404);
-  if (line.line_source !== "manual") throw new ApiError("System invoice lines cannot be edited", 422);
+
+  if (line.line_source !== "manual" && line.line_source !== "system") {
+    throw new ApiError("Invoice line source cannot be edited", 422);
+  }
+
+  if (line.line_source === "system") {
+    const sourceKey = sourceKeyForExistingSystemLine(invoice, line);
+    if (!sourceKey) throw new ApiError("System invoice line cannot be edited because it has no stable source key", 422);
+
+    const base = metadataBase(line.metadata, baseSnapshot(line));
+    const override = metadataOverride(line.metadata);
+    const nextOverride: OverrideValues = { ...override };
+    if (input.serviceCode !== undefined) {
+      nextOverride.serviceCode = normalizeServiceCode(input.serviceCode || base.serviceCode);
+    }
+    if (input.description !== undefined) nextOverride.description = input.description;
+    if (input.qty !== undefined) nextOverride.qty = input.qty;
+    if (input.unitRate !== undefined) nextOverride.unitRate = input.unitRate;
+    if (input.vatRate !== undefined && input.vatRate !== null) nextOverride.vatRate = input.vatRate;
+    if (input.reason !== undefined) nextOverride.reason = input.reason;
+    nextOverride.overriddenBy = input.updatedBy ?? nextOverride.overriddenBy ?? null;
+    nextOverride.overriddenAt = new Date().toISOString();
+
+    const effective = effectiveValues(base, nextOverride);
+    await prisma.invoice_line_items.update({
+      where: { id: lineItemId },
+      data: {
+        source_key: sourceKey,
+        service_code: effective.serviceCode,
+        description: effective.description,
+        qty: effective.qty,
+        unit_rate: effective.unitRate,
+        amount: effective.amount,
+        vat_rate: effective.vatRate,
+        vat_amount: effective.vatAmount,
+        is_overridden: true,
+        metadata: metadataWithBase(line.metadata, base, nextOverride),
+      },
+    });
+    return recalculateInvoiceTotals(prisma, invoice.id);
+  }
 
   const qty = input.qty ?? Number(line.qty);
   const unitRate = input.unitRate ?? Number(line.unit_rate);
@@ -233,11 +467,11 @@ export async function updateManualInvoiceLine(
   return recalculateInvoiceTotals(prisma, invoice.id);
 }
 
-export async function deleteManualInvoiceLine(prisma: Db, invoiceId: string, lineItemId: string) {
+export async function deleteInvoiceLine(prisma: Db, invoiceId: string, lineItemId: string) {
   const invoice = await assertEditableInvoice(prisma, invoiceId);
   const line = await prisma.invoice_line_items.findUnique({ where: { id: lineItemId } });
   if (!line || line.invoice_id !== invoiceId) throw new ApiError("Invoice line item not found", 404);
-  if (line.line_source !== "manual") throw new ApiError("System invoice lines cannot be deleted", 422);
+  if (line.line_source !== "manual") throw new ApiError("System-generated lines can be edited but not deleted.", 422);
   await prisma.invoice_line_items.delete({ where: { id: lineItemId } });
   return recalculateInvoiceTotals(prisma, invoice.id);
 }
@@ -316,10 +550,11 @@ function buildServiceLines(input: {
       const vatRate = input.clientVatRegistered && svc?.vat_applicable ? 0.2 : 0;
       const { amount, vatAmount } = lineAmounts(item.quantity, unitRate, vatRate);
 
-      lines.push({
+      lines.push(generatedSystemLine({
         shipment_id: input.shipmentId,
         sub_shipment_id: input.subShipmentId,
         shipment_line_item_id: item.id,
+        source_key: serviceLineSourceKey(input.shipmentId, input.subShipmentId, item.id, billingServiceCode),
         service_code: billingServiceCode,
         description: `${svc?.display_name ?? service} - SKU ${item.products.sku} - Shipment ${input.shipmentReference}`,
         qty: item.quantity,
@@ -329,7 +564,7 @@ function buildServiceLines(input: {
         vat_amount: vatAmount,
         line_source: "system",
         sort_order: sortOrder++,
-      });
+      }));
     }
   }
 
@@ -349,42 +584,48 @@ function buildBoxLines(input: {
 }) {
   const lines: SystemInvoiceLine[] = [];
   let sortOrder = input.startSortOrder;
+  const quantityByServiceCode = new Map<string, number>();
 
   for (const box of input.boxes) {
     if (!box.dispatched_at) continue;
     const serviceCode = boxServiceCode(box);
     if (!serviceCode) continue;
-
     const normalizedServiceCode = normalizeServiceCode(serviceCode);
+    quantityByServiceCode.set(normalizedServiceCode, (quantityByServiceCode.get(normalizedServiceCode) ?? 0) + 1);
+  }
+
+  for (const [normalizedServiceCode, qty] of quantityByServiceCode.entries()) {
     const svc = input.catalogByCode.get(normalizedServiceCode);
     const billingServiceCode = svc?.code ?? normalizedServiceCode;
     const custom = clientPriceForService(input.prices, normalizedServiceCode, input.tier);
     const unitRate = Number(custom?.rate ?? getTierRate(svc?.default_tier_pricing, input.tier));
     const vatRate = input.clientVatRegistered && svc?.vat_applicable ? 0.2 : 0;
-    const { amount, vatAmount } = lineAmounts(1, unitRate, vatRate);
+    const { amount, vatAmount } = lineAmounts(qty, unitRate, vatRate);
 
-    lines.push({
+    lines.push(generatedSystemLine({
       shipment_id: input.shipmentId,
       sub_shipment_id: input.subShipmentId,
       shipment_line_item_id: null,
+      source_key: boxServiceLineSourceKey(input.shipmentId, input.subShipmentId, billingServiceCode),
       service_code: billingServiceCode,
       description: `${svc?.display_name ?? billingServiceCode} - Shipment ${input.shipmentReference}`,
-      qty: 1,
+      qty,
       unit_rate: unitRate,
       amount,
       vat_rate: vatRate,
       vat_amount: vatAmount,
       line_source: "system",
       sort_order: sortOrder++,
-    });
+    }));
   }
 
   return lines;
 }
 
-function totalsFor(lines: Array<{ amount: Prisma.Decimal | number | string; vat_amount: Prisma.Decimal | number | string }>) {
-  const subtotal = lines.reduce((sum, line) => sum + Number(line.amount), 0);
-  const vatAmount = lines.reduce((sum, line) => sum + Number(line.vat_amount), 0);
+function totalsFor(lines: Array<{ amount: Prisma.Decimal | number | string; vat_amount: Prisma.Decimal | number | string; is_suppressed?: boolean }>) {
+  const activeLines = lines.filter((line) => !line.is_suppressed);
+  const subtotal = activeLines.reduce((sum, line) => sum + Number(line.amount), 0);
+  const vatAmount = activeLines.reduce((sum, line) => sum + Number(line.vat_amount), 0);
   return { subtotal, vatAmount, total: subtotal + vatAmount };
 }
 
@@ -440,22 +681,42 @@ async function refreshDispatchInvoice(
   data: DispatchInvoiceCreateData,
   systemLines: SystemInvoiceLine[],
 ) {
+  const existingSystemLines = existing.invoice_line_items.filter((line) => line.line_source === "system");
   const preservedLines = existing.invoice_line_items.filter((line) => line.line_source !== "system");
-  const totals = totalsFor([...systemLines, ...preservedLines]);
+  const generatedSourceKeys = new Set(systemLines.map((line) => line.source_key));
+  const overrideBySourceKey = new Map<string, InvoiceLineRecord>();
+
+  for (const line of existingSystemLines) {
+    if (!line.is_overridden && !line.is_suppressed) continue;
+    const sourceKey = sourceKeyForExistingSystemLine(existing, line);
+    if (sourceKey) overrideBySourceKey.set(sourceKey, line);
+  }
+
+  const refreshedSystemLines = systemLines.map((line, index) => ({
+    ...applyExistingSystemOverride(line, overrideBySourceKey.get(line.source_key)),
+    sort_order: index + 1,
+  }));
+  const staleSystemLines = existingSystemLines
+    .filter((line) => line.is_overridden && !line.is_suppressed)
+    .map((line) => ({ line, sourceKey: sourceKeyForExistingSystemLine(existing, line) }))
+    .filter((entry): entry is { line: InvoiceLineRecord; sourceKey: string } => Boolean(entry.sourceKey && !generatedSourceKeys.has(entry.sourceKey)))
+    .map((entry, index) => staleOverriddenSystemLine(entry.line, entry.sourceKey, refreshedSystemLines.length + index + 1, existing.shipment_id));
+  const nextSystemLines = [...refreshedSystemLines, ...staleSystemLines];
+  const totals = totalsFor([...nextSystemLines, ...preservedLines]);
 
   await prisma.invoice_line_items.deleteMany({
     where: { invoice_id: existing.id, line_source: "system" },
   });
-  if (systemLines.length) {
+  if (nextSystemLines.length) {
     await prisma.invoice_line_items.createMany({
-      data: systemLineCreateManyData(existing.id, systemLines),
+      data: systemLineCreateManyData(existing.id, nextSystemLines),
     });
   }
   await Promise.all(
     preservedLines.map((line, index) =>
       prisma.invoice_line_items.update({
         where: { id: line.id },
-        data: { sort_order: systemLines.length + index + 1 },
+        data: { sort_order: nextSystemLines.length + index + 1 },
       }),
     ),
   );
