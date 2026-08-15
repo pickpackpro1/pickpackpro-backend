@@ -10,7 +10,9 @@ import {
   buildDraftPayload,
   createShipmentLineItems,
   draftItemSchema,
+  normalizeSubmittedItemServices,
   parseSubmittedItems,
+  SHIPMENT_WRITE_TRANSACTION_OPTIONS,
 } from "@/lib/shipmentDrafts";
 import { serializeShipment, shipmentContractInclude } from "@/lib/shipmentContract";
 import { json } from "@/lib/validation";
@@ -74,7 +76,9 @@ export async function POST(req: Request) {
   try {
     const body = await json(req, createSchema);
     const user = await requireClientAccess(req, body.clientId);
-    const submittedItems = body.isDraft ? [] : parseSubmittedItems(body.items);
+    const submittedItems = body.isDraft
+      ? []
+      : await normalizeSubmittedItemServices(prisma, parseSubmittedItems(body.items));
     const draftPayload = body.isDraft
       ? buildDraftPayload({
           clientId: body.clientId,
@@ -84,7 +88,7 @@ export async function POST(req: Request) {
         })
       : undefined;
 
-    const shipment = await prisma.$transaction(async (tx) => {
+    const shipmentId = await prisma.$transaction(async (tx) => {
       const reference = await generateShipmentRef(tx as typeof prisma);
       const created = await tx.shipments.create({
         data: {
@@ -105,10 +109,11 @@ export async function POST(req: Request) {
         await attachDraftFnskuFiles(tx, created.id, createdLineItems);
       }
 
-      return tx.shipments.findUniqueOrThrow({
-        where: { id: created.id },
-        include: shipmentContractInclude,
-      });
+      return created.id;
+    }, SHIPMENT_WRITE_TRANSACTION_OPTIONS);
+    const shipment = await prisma.shipments.findUniqueOrThrow({
+      where: { id: shipmentId },
+      include: shipmentContractInclude,
     });
     const serializedShipment = serializeShipment(shipment);
     await prisma.audit_logs.create({

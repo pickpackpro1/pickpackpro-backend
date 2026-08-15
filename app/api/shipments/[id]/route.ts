@@ -9,7 +9,9 @@ import {
   createShipmentLineItems,
   DRAFT_FNSKU_ENTITY_TYPES,
   draftItemSchema,
+  normalizeSubmittedItemServices,
   parseSubmittedItems,
+  SHIPMENT_WRITE_TRANSACTION_OPTIONS,
 } from "@/lib/shipmentDrafts";
 import { serializeShipment, serializeUploadedFile, shipmentContractInclude } from "@/lib/shipmentContract";
 import { PRODUCT_FNSKU_LABEL_ENTITY_TYPE } from "@/lib/productFnskuLabels";
@@ -80,7 +82,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         ? (shipment.draft_payload as Record<string, unknown>)
         : {};
     const payloadItems = body.items ?? (Array.isArray(existingDraftPayload.items) ? existingDraftPayload.items : []);
-    const submittedItems = body.isDraft ? [] : parseSubmittedItems(payloadItems);
+    const submittedItems = body.isDraft
+      ? []
+      : await normalizeSubmittedItemServices(prisma, parseSubmittedItems(payloadItems));
     const draftPayload = body.isDraft
       ? buildDraftPayload({
           clientId: shipment.client_id,
@@ -90,7 +94,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         })
       : undefined;
 
-    const updated = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
       const shipmentUpdate = await tx.shipments.update({
         where: { id: params.id },
         data: {
@@ -111,10 +115,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         await attachDraftFnskuFiles(tx, params.id, createdLineItems);
       }
 
-      return tx.shipments.findUniqueOrThrow({
-        where: { id: shipmentUpdate.id },
-        include: shipmentContractInclude,
-      });
+      return shipmentUpdate.id;
+    }, SHIPMENT_WRITE_TRANSACTION_OPTIONS);
+    const updated = await prisma.shipments.findUniqueOrThrow({
+      where: { id: params.id },
+      include: shipmentContractInclude,
     });
     const serializedShipment = serializeShipment(updated);
 

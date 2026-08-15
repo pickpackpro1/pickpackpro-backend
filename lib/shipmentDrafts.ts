@@ -1,8 +1,18 @@
-import { Prisma } from "@prisma/client";
+import { randomUUID } from "crypto";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { ApiError } from "@/lib/apiResponse";
+import { normalizeServiceCode } from "@/lib/businessLogic";
 
-const DEFAULT_SERVICES = ["FNSKU_LABEL", "POLY_BAG", "BUBBLE_WRAP", "BUNDLING"];
+const DEFAULT_SERVICES = ["fnsku_label", "polybag", "bubble_wrap", "bundling"];
+const BULK_CHUNK_SIZE = 500;
+
+type Db = PrismaClient | Prisma.TransactionClient;
+
+export const SHIPMENT_WRITE_TRANSACTION_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 60_000,
+};
 
 export const draftItemSchema = z.object({
   draftItemId: z.string().optional().nullable(),
@@ -103,6 +113,25 @@ function getServices(item: DraftShipmentItemInput) {
   return item.services ?? item.servicesSelected ?? item.services_selected ?? [];
 }
 
+function chunks<T>(values: T[], size = BULK_CHUNK_SIZE) {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
+}
+
+function splitServiceValues(services: string[]) {
+  return services
+    .flatMap((service) => String(service ?? "").split(/[;,|]/))
+    .map((service) => service.trim())
+    .filter(Boolean);
+}
+
+function uniqueValues(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 export function buildDraftPayload(input: {
   clientId?: string | null;
   notes?: string | null;
@@ -177,6 +206,46 @@ export function parseSubmittedItems(rawItems: unknown): SubmittedShipmentItemInp
   return items;
 }
 
+export async function normalizeSubmittedItemServices(db: Db, items: SubmittedShipmentItemInput[]) {
+  const catalog = await db.service_catalog.findMany({
+    where: { active: true },
+    select: { code: true, display_name: true },
+  });
+  const catalogCodeByNormalized = new Map<string, string>();
+  for (const service of catalog) {
+    catalogCodeByNormalized.set(normalizeServiceCode(service.code), service.code);
+    catalogCodeByNormalized.set(normalizeServiceCode(service.display_name), service.code);
+  }
+
+  const errors: Array<{ index: number; sku: string; service: string; normalizedService: string }> = [];
+  const normalizedItems = items.map((item, index) => {
+    const serviceInputs = splitServiceValues(item.services);
+    const rawServices = serviceInputs.length ? serviceInputs : DEFAULT_SERVICES;
+    const normalizedServices: string[] = [];
+    const seen = new Set<string>();
+
+    for (const rawService of rawServices) {
+      const normalizedService = normalizeServiceCode(rawService);
+      const serviceCode = catalogCodeByNormalized.get(normalizedService);
+      if (!serviceCode) {
+        errors.push({ index, sku: item.sku, service: rawService, normalizedService });
+        continue;
+      }
+      if (seen.has(serviceCode)) continue;
+      seen.add(serviceCode);
+      normalizedServices.push(serviceCode);
+    }
+
+    return { ...item, services: normalizedServices };
+  });
+
+  if (errors.length) {
+    throw new ApiError("Unsupported shipment service in imported line items", 422, { services: errors });
+  }
+
+  return normalizedItems;
+}
+
 export function buildServiceStatus(services: string[]) {
   return Object.fromEntries(services.map((service) => [service, "PENDING"]));
 }
@@ -193,57 +262,161 @@ export async function createShipmentLineItems(
     item: SubmittedShipmentItemInput;
     index: number;
     displayOrder: number;
+    fnskuLabelFileId: string | null;
   }> = [];
 
-  for (const [index, item] of items.entries()) {
-    const bundleSize = getBundleSize(item);
-    const needsBundling = getNeedsBundling(item);
-    const product = await tx.products.upsert({
-      where: { client_id_sku: { client_id: clientId, sku: item.sku } },
-      update: {
-        default_fnsku: getFnsku(item) || undefined,
-        needs_bundling: needsBundling,
-        bundle_size: bundleSize,
-      },
-      create: {
+  const skus = uniqueValues(items.map((item) => item.sku));
+  const firstItemBySku = new Map<string, SubmittedShipmentItemInput>();
+  const lastItemBySku = new Map<string, SubmittedShipmentItemInput>();
+  for (const item of items) {
+    if (!firstItemBySku.has(item.sku)) firstItemBySku.set(item.sku, item);
+    lastItemBySku.set(item.sku, item);
+  }
+
+  const existingProducts = (
+    await Promise.all(
+      chunks(skus).map((skuChunk) =>
+        tx.products.findMany({
+          where: { client_id: clientId, sku: { in: skuChunk } },
+          select: { id: true, sku: true },
+        }),
+      ),
+    )
+  ).flat();
+  const existingSkuSet = new Set(existingProducts.map((product) => product.sku));
+
+  const existingProductUpdates = existingProducts
+    .map((product) => {
+      const item = lastItemBySku.get(product.sku);
+      if (!item) return null;
+      return {
+        id: product.id,
+        defaultFnsku: getFnsku(item) || item.sku,
+        needsBundling: getNeedsBundling(item),
+        bundleSize: getBundleSize(item),
+      };
+    })
+    .filter((update): update is NonNullable<typeof update> => Boolean(update));
+
+  for (const updateChunk of chunks(existingProductUpdates)) {
+    if (!updateChunk.length) continue;
+    await tx.$executeRaw`
+      update products as p
+      set
+        default_fnsku = updates.default_fnsku,
+        needs_bundling = updates.needs_bundling,
+        bundle_size = updates.bundle_size
+      from (
+        values ${Prisma.join(
+          updateChunk.map((update) =>
+            Prisma.sql`(${update.id}::uuid, ${update.defaultFnsku}::text, ${update.needsBundling}::boolean, ${update.bundleSize}::integer)`,
+          ),
+        )}
+      ) as updates(id, default_fnsku, needs_bundling, bundle_size)
+      where p.id = updates.id
+    `;
+  }
+
+  const missingProducts = skus
+    .filter((sku) => !existingSkuSet.has(sku))
+    .map((sku) => {
+      const firstItem = firstItemBySku.get(sku);
+      const lastItem = lastItemBySku.get(sku);
+      if (!firstItem || !lastItem) throw new ApiError(`Missing product payload for SKU ${sku}`, 400);
+      return {
+        id: randomUUID(),
         client_id: clientId,
-        sku: item.sku,
-        product_name: item.productName,
-        default_fnsku: getFnsku(item) || null,
+        sku,
+        product_name: firstItem.productName,
+        default_fnsku: getFnsku(lastItem) || sku,
         length_cm: 0,
         width_cm: 0,
         height_cm: 0,
         weight_kg: 0,
-        needs_bundling: needsBundling,
-        bundle_size: bundleSize,
-      },
+        needs_bundling: getNeedsBundling(lastItem),
+        bundle_size: getBundleSize(lastItem),
+      } satisfies Prisma.productsCreateManyInput;
     });
 
-    const displayOrder = getDisplayOrder(item, index);
-    const lineItem = await tx.shipment_line_items.create({
-      data: {
-        shipment_id: shipmentId,
-        product_id: product.id,
-        product_name: item.productName,
-        fnsku: getFnsku(item) || item.sku,
-        qty_expected: item.expectedQty,
-        dispatch_qty: null,
-        needs_bundling: needsBundling,
-        bundle_size: bundleSize,
-        display_order: displayOrder,
-        services_selected: item.services,
-        service_status: buildServiceStatus(item.services),
-        discrepancy_notes: item.notes ?? null,
+  for (const productChunk of chunks(missingProducts)) {
+    if (!productChunk.length) continue;
+    await tx.products.createMany({ data: productChunk, skipDuplicates: true });
+  }
+
+  const products = (
+    await Promise.all(
+      chunks(skus).map((skuChunk) =>
+        tx.products.findMany({
+          where: { client_id: clientId, sku: { in: skuChunk } },
+          select: {
+            id: true,
+            sku: true,
+            default_fnsku_label_file_id: true,
+          },
+        }),
+      ),
+    )
+  ).flat();
+  const productBySku = new Map(products.map((product) => [product.sku, product]));
+
+  const defaultLabelIds = uniqueValues(products.map((product) => product.default_fnsku_label_file_id ?? ""));
+  const validDefaultLabelIds = new Set<string>();
+  for (const labelIdChunk of chunks(defaultLabelIds)) {
+    if (!labelIdChunk.length) continue;
+    const files = await tx.uploaded_files.findMany({
+      where: {
+        id: { in: labelIdChunk },
+        client_id: clientId,
+        file_type: "fnsku_label",
       },
+      select: { id: true },
+    });
+    for (const file of files) validDefaultLabelIds.add(file.id);
+  }
+
+  const lineItemRows: Prisma.shipment_line_itemsCreateManyInput[] = [];
+  for (const [index, item] of items.entries()) {
+    const bundleSize = getBundleSize(item);
+    const needsBundling = getNeedsBundling(item);
+    const product = productBySku.get(item.sku);
+    if (!product) throw new ApiError(`Product could not be prepared for SKU ${item.sku}`, 500);
+
+    const displayOrder = getDisplayOrder(item, index);
+    const fnskuLabelFileId =
+      product.default_fnsku_label_file_id && validDefaultLabelIds.has(product.default_fnsku_label_file_id)
+        ? product.default_fnsku_label_file_id
+        : null;
+    const lineItemId = randomUUID();
+    lineItemRows.push({
+      id: lineItemId,
+      shipment_id: shipmentId,
+      product_id: product.id,
+      product_name: item.productName,
+      fnsku: getFnsku(item) || item.sku,
+      fnsku_label_file_id: fnskuLabelFileId,
+      qty_expected: item.expectedQty,
+      dispatch_qty: null,
+      needs_bundling: needsBundling,
+      bundle_size: bundleSize,
+      display_order: displayOrder,
+      services_selected: item.services as Prisma.InputJsonValue,
+      service_status: buildServiceStatus(item.services) as Prisma.InputJsonValue,
+      discrepancy_notes: item.notes ?? null,
     });
 
     createdLineItems.push({
-      lineItemId: lineItem.id,
+      lineItemId,
       productId: product.id,
       item,
       index,
       displayOrder,
+      fnskuLabelFileId,
     });
+  }
+
+  for (const lineItemChunk of chunks(lineItemRows)) {
+    if (!lineItemChunk.length) continue;
+    await tx.shipment_line_items.createMany({ data: lineItemChunk });
   }
 
   return createdLineItems;
@@ -284,6 +457,7 @@ export async function attachDraftFnskuFiles(
     item: SubmittedShipmentItemInput;
     index: number;
     displayOrder: number;
+    fnskuLabelFileId?: string | null;
   }>
 ) {
   const draftFiles = await tx.uploaded_files.findMany({
@@ -350,25 +524,44 @@ export async function attachDraftFnskuFiles(
   const productIds = [
     ...new Set(
       createdLineItems
-        .filter((created) => !attachedLineItemIds.has(created.lineItemId))
+        .filter((created) => !attachedLineItemIds.has(created.lineItemId) && !created.fnskuLabelFileId)
         .map((created) => created.productId),
     ),
   ];
   if (productIds.length === 0) return;
 
-  const productsWithDefaultLabels = await tx.products.findMany({
-    where: {
-      id: { in: productIds },
-      default_fnsku_label_file_id: { not: null },
-    },
-    select: {
-      id: true,
-      default_fnsku_label_file_id: true,
-    },
-  });
+  const productsWithDefaultLabels = (
+    await Promise.all(
+      chunks(productIds).map((productIdChunk) =>
+        tx.products.findMany({
+          where: {
+            id: { in: productIdChunk },
+            default_fnsku_label_file_id: { not: null },
+          },
+          select: {
+            id: true,
+            client_id: true,
+            default_fnsku_label_file_id: true,
+          },
+        }),
+      ),
+    )
+  ).flat();
+  const defaultLabelIds = uniqueValues(productsWithDefaultLabels.map((product) => product.default_fnsku_label_file_id ?? ""));
+  const validLabelById = new Map<string, { client_id: string }>();
+  for (const labelIdChunk of chunks(defaultLabelIds)) {
+    if (!labelIdChunk.length) continue;
+    const files = await tx.uploaded_files.findMany({
+      where: { id: { in: labelIdChunk }, file_type: "fnsku_label" },
+      select: { id: true, client_id: true },
+    });
+    for (const file of files) validLabelById.set(file.id, { client_id: file.client_id });
+  }
   const productLabelByProductId = new Map<string, string>();
   for (const product of productsWithDefaultLabels) {
     if (!product.default_fnsku_label_file_id) continue;
+    const label = validLabelById.get(product.default_fnsku_label_file_id);
+    if (!label || label.client_id !== product.client_id) continue;
     productLabelByProductId.set(product.id, product.default_fnsku_label_file_id);
   }
 
