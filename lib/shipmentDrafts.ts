@@ -57,6 +57,17 @@ export type SubmittedShipmentItemInput = DraftShipmentItemInput & {
   services: string[];
 };
 
+type SubmittedCustomService = {
+  name: string;
+  price: number;
+  status: "PENDING";
+};
+
+export type NormalizedShipmentItemInput = SubmittedShipmentItemInput & {
+  customServices: SubmittedCustomService[];
+  custom_services: SubmittedCustomService[];
+};
+
 export const DRAFT_FNSKU_ENTITY_TYPES = ["shipment_draft_item", "draft_shipment_item"];
 
 function firstNumber(...values: Array<number | null | undefined>) {
@@ -216,19 +227,27 @@ export async function normalizeSubmittedItemServices(db: Db, items: SubmittedShi
     catalogCodeByNormalized.set(normalizeServiceCode(service.code), service.code);
     catalogCodeByNormalized.set(normalizeServiceCode(service.display_name), service.code);
   }
+  for (const serviceCode of DEFAULT_SERVICES) {
+    catalogCodeByNormalized.set(normalizeServiceCode(serviceCode), serviceCode);
+  }
 
-  const errors: Array<{ index: number; sku: string; service: string; normalizedService: string }> = [];
-  const normalizedItems = items.map((item, index) => {
+  const normalizedItems = items.map((item) => {
     const serviceInputs = splitServiceValues(item.services);
     const rawServices = serviceInputs.length ? serviceInputs : DEFAULT_SERVICES;
     const normalizedServices: string[] = [];
     const seen = new Set<string>();
+    const customServices: SubmittedCustomService[] = [];
+    const seenCustomServices = new Set<string>();
 
     for (const rawService of rawServices) {
       const normalizedService = normalizeServiceCode(rawService);
       const serviceCode = catalogCodeByNormalized.get(normalizedService);
       if (!serviceCode) {
-        errors.push({ index, sku: item.sku, service: rawService, normalizedService });
+        const customServiceKey = normalizedService || rawService.toLowerCase();
+        if (!seenCustomServices.has(customServiceKey)) {
+          seenCustomServices.add(customServiceKey);
+          customServices.push({ name: rawService, price: 0, status: "PENDING" });
+        }
         continue;
       }
       if (seen.has(serviceCode)) continue;
@@ -236,12 +255,13 @@ export async function normalizeSubmittedItemServices(db: Db, items: SubmittedShi
       normalizedServices.push(serviceCode);
     }
 
-    return { ...item, services: normalizedServices };
+    return {
+      ...item,
+      services: normalizedServices,
+      customServices,
+      custom_services: customServices,
+    };
   });
-
-  if (errors.length) {
-    throw new ApiError("Unsupported shipment service in imported line items", 422, { services: errors });
-  }
 
   return normalizedItems;
 }
@@ -254,12 +274,12 @@ export async function createShipmentLineItems(
   tx: Prisma.TransactionClient,
   shipmentId: string,
   clientId: string,
-  items: SubmittedShipmentItemInput[]
+  items: NormalizedShipmentItemInput[]
 ) {
   const createdLineItems: Array<{
     lineItemId: string;
     productId: string;
-    item: SubmittedShipmentItemInput;
+    item: NormalizedShipmentItemInput;
     index: number;
     displayOrder: number;
     fnskuLabelFileId: string | null;
@@ -401,6 +421,7 @@ export async function createShipmentLineItems(
       display_order: displayOrder,
       services_selected: item.services as Prisma.InputJsonValue,
       service_status: buildServiceStatus(item.services) as Prisma.InputJsonValue,
+      custom_services: item.customServices.length ? (item.customServices as Prisma.InputJsonValue) : undefined,
       discrepancy_notes: item.notes ?? null,
     });
 
