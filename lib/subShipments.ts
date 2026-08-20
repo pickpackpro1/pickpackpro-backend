@@ -18,6 +18,8 @@ type SubShipmentLineInput = {
   quantity: number;
 };
 
+export type PublicSubShipmentStatus = "in_progress" | "dispatched";
+
 type SubShipmentQuantityItem = {
   shipment_line_item_id: string;
   quantity: number;
@@ -52,6 +54,19 @@ const activeSubShipmentStatuses: SubShipmentStatus[] = [
   "dispatched",
   "completed",
 ];
+
+export function publicSubShipmentStatus(status: unknown): PublicSubShipmentStatus {
+  return status === "dispatched" || status === "completed" ? "dispatched" : "in_progress";
+}
+
+export function publicSubShipmentStatusFields(status: unknown) {
+  const internalStatus = status ?? null;
+  return {
+    status: publicSubShipmentStatus(status),
+    internalStatus,
+    internal_status: internalStatus,
+  };
+}
 
 export function isLineItemPrepared(item: LineForPrep) {
   const selected = item.services_selected as string[] | null;

@@ -5,11 +5,11 @@ import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
 import { areDispatchableBoxesDispatched, serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
-import { areSubShipmentQuantitiesDispatched, refreshParentShipmentDispatchStatus, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
+import { areSubShipmentQuantitiesDispatched, publicSubShipmentStatusFields, refreshParentShipmentDispatchStatus, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const patchSchema = z.object({
-  status: z.nativeEnum(SubShipmentStatus).optional(),
+  status: z.union([z.nativeEnum(SubShipmentStatus), z.literal("in_progress")]).optional(),
   notes: z.string().optional().nullable(),
 });
 
@@ -57,7 +57,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const boxes = subShipment.outbound_boxes.map((box) =>
       serializeBoxOwnership(box, { subShipmentReference: subShipment.reference }),
     );
-    return success({ ...subShipment, outbound_boxes: boxes, boxes });
+    return success({ ...subShipment, ...publicSubShipmentStatusFields(subShipment.status), outbound_boxes: boxes, boxes });
   } catch (err) {
     return handleApiError(err);
   }
@@ -98,7 +98,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         throw new ApiError("Only dispatched sub-shipments can be completed", 422);
       }
 
-      const nextStatus = body.status ?? subShipment.status;
+      const nextStatus = body.status === undefined || body.status === "in_progress" ? subShipment.status : body.status;
       const next = await tx.sub_shipments.update({
         where: { id: params.id },
         data: {
@@ -143,7 +143,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       }
     }
 
-    return success(updated);
+    return success({ ...updated, ...publicSubShipmentStatusFields(updated.status) });
   } catch (err) {
     return handleApiError(err);
   }

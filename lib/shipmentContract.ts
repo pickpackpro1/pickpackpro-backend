@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { boxNumberResponseFields } from "@/lib/boxNumbers";
+import { publicSubShipmentStatusFields } from "@/lib/subShipments";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
 export const shipmentContractInclude = {
@@ -257,6 +258,7 @@ function serializeSubShipment(subShipment: Record<string, any>) {
   const dispatchableBoxes = boxes.filter((box) => !box.pallet_id);
   return {
     ...subShipment,
+    ...publicSubShipmentStatusFields(subShipment.status),
     sequenceNo: subShipment.sequence_no,
     sequence_no: subShipment.sequence_no,
     parentShipmentId: subShipment.parent_shipment_id,

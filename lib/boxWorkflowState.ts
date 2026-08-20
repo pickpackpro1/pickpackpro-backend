@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { ApiError } from "./apiResponse";
 import { serializeBoxOwnership } from "./pallets";
-import { getSubShipmentAvailability } from "./subShipments";
+import { getSubShipmentAvailability, publicSubShipmentStatusFields } from "./subShipments";
 
 type Db = Prisma.TransactionClient;
 
@@ -175,7 +175,7 @@ export async function getSubShipmentBoxesWorkflowState(prisma: Db, subShipmentId
       id: subShipment.id,
       parentShipmentId: subShipment.parent_shipment_id,
       parent_shipment_id: subShipment.parent_shipment_id,
-      status: subShipment.status,
+      ...publicSubShipmentStatusFields(subShipment.status),
       updatedAt: subShipment.updated_at,
       updated_at: subShipment.updated_at,
     },

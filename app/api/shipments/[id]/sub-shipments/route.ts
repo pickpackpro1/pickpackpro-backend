@@ -3,7 +3,7 @@ import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
-import { assertSubShipmentItemsAvailable, getSubShipmentAvailability, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
+import { assertSubShipmentItemsAvailable, getSubShipmentAvailability, publicSubShipmentStatusFields, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const itemSchema = z.object({
@@ -80,7 +80,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       const boxes = subShipment.outbound_boxes.map((box) =>
         serializeBoxOwnership(box, { subShipmentReference: subShipment.reference }),
       );
-      return { ...subShipment, outbound_boxes: boxes, boxes };
+      return { ...subShipment, ...publicSubShipmentStatusFields(subShipment.status), outbound_boxes: boxes, boxes };
     });
     return success({ subShipments, sub_shipments: subShipments, availability });
   } catch (err) {
@@ -158,7 +158,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return created;
     });
 
-    return success(subShipment, 201);
+    return success({ ...subShipment, ...publicSubShipmentStatusFields(subShipment.status) }, 201);
   } catch (err) {
     return handleApiError(err);
   }

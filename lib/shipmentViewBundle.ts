@@ -6,7 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { serializeUploadedFile } from "@/lib/shipmentContract";
 import { serializeShipmentNoteAttachments } from "@/lib/shipmentNoteAttachments";
-import { getSubShipmentAvailability, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
+import { getSubShipmentAvailability, publicSubShipmentStatusFields, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 
 type JsonRecord = Record<string, any>;
 type ViewMode = "quick" | "detail";
@@ -681,6 +681,7 @@ function buildSubShipmentPayload(params: {
   topLevelBoxes: JsonRecord[];
   invoicesBySubShipmentId: Map<string, JsonRecord>;
 }) {
+  const statusFields = publicSubShipmentStatusFields(params.subShipment.status);
   const boxesForSubShipment = params.topLevelBoxes.filter((box) => box.subShipmentId === params.subShipment.id || box.sub_shipment_id === params.subShipment.id);
   const normalBoxes = boxesForSubShipment.filter((box) => box.boxType === BoxType.box || box.box_type === BoxType.box);
   const pallets = boxesForSubShipment.filter((box) => box.boxType === BoxType.pallet || box.box_type === BoxType.pallet);
@@ -715,7 +716,7 @@ function buildSubShipmentPayload(params: {
   return {
     id: params.subShipment.id,
     reference: params.subShipment.reference,
-    status: params.subShipment.status,
+    ...statusFields,
     sequenceNo: params.subShipment.sequence_no,
     sequence_no: params.subShipment.sequence_no,
     parentShipmentId: params.subShipment.parent_shipment_id,
