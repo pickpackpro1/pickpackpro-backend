@@ -37,6 +37,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       });
       if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
 
+      await refreshSubShipmentStatusFromBoxes(tx, subShipment.id);
       const created = await createPalletWithBoxes(tx, {
         shipmentId: subShipment.parent_shipment_id,
         subShipmentId: subShipment.id,

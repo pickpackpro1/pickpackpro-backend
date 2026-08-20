@@ -6,7 +6,7 @@ import { assertManualBoxNumberAvailable, manualBoxNumberFromBody, normalizeBoxSi
 import { getShipmentBoxesWorkflowState, getSubShipmentBoxesWorkflowState } from "@/lib/boxWorkflowState";
 import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
-import { getSubShipmentAvailability } from "@/lib/subShipments";
+import { getSubShipmentAvailability, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const schema = z.object({
@@ -122,7 +122,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         throw new ApiError("Use the pallet endpoint to create pallets from selected boxes", 422);
       }
       if (subShipmentId) {
-        const subShipment = await tx.sub_shipments.findUnique({ where: { id: subShipmentId } });
+        const subShipment = await refreshSubShipmentStatusFromBoxes(tx, subShipmentId);
         if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
         if (subShipment.parent_shipment_id !== params.id) throw new ApiError("Sub-shipment does not belong to this shipment", 422);
         if (subShipment.status === "dispatched" || subShipment.status === "completed" || subShipment.status === "cancelled") {

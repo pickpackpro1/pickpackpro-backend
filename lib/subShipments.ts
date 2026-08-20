@@ -18,6 +18,17 @@ type SubShipmentLineInput = {
   quantity: number;
 };
 
+type SubShipmentQuantityItem = {
+  shipment_line_item_id: string;
+  quantity: number;
+};
+
+type SubShipmentQuantityBox = {
+  box_type: string;
+  contents: Prisma.JsonValue;
+  dispatched_at: Date | null;
+};
+
 type BoxContentEntry = {
   shipmentItemId?: string;
   shipment_item_id?: string;
@@ -75,6 +86,53 @@ function contentQuantity(entry: BoxContentEntry) {
 function addQuantity(map: Map<string, number>, shipmentItemId: string, quantity: number) {
   if (!shipmentItemId || quantity <= 0) return;
   map.set(shipmentItemId, (map.get(shipmentItemId) ?? 0) + quantity);
+}
+
+function requiredSubShipmentQuantities(items: SubShipmentQuantityItem[]) {
+  const requiredByItem = new Map<string, number>();
+  for (const item of items) {
+    addQuantity(requiredByItem, item.shipment_line_item_id, item.quantity);
+  }
+  return requiredByItem;
+}
+
+function boxQuantities(boxes: SubShipmentQuantityBox[], dispatchedOnly = false) {
+  const quantitiesByItem = new Map<string, number>();
+  for (const box of boxes) {
+    if (box.box_type !== "box") continue;
+    if (dispatchedOnly && !box.dispatched_at) continue;
+
+    for (const content of boxContents(box.contents)) {
+      addQuantity(quantitiesByItem, contentShipmentItemId(content), contentQuantity(content));
+    }
+  }
+  return quantitiesByItem;
+}
+
+function areRequiredQuantitiesCovered(
+  items: SubShipmentQuantityItem[],
+  boxes: SubShipmentQuantityBox[],
+  options: { dispatchedOnly?: boolean } = {},
+) {
+  const requiredByItem = requiredSubShipmentQuantities(items);
+  if (requiredByItem.size === 0) return false;
+
+  const quantitiesByItem = boxQuantities(boxes, options.dispatchedOnly);
+  return [...requiredByItem.entries()].every(
+    ([shipmentItemId, requiredQty]) => (quantitiesByItem.get(shipmentItemId) ?? 0) >= requiredQty,
+  );
+}
+
+export function areSubShipmentQuantitiesBoxed(items: SubShipmentQuantityItem[], boxes: SubShipmentQuantityBox[]) {
+  return areRequiredQuantitiesCovered(items, boxes);
+}
+
+export function areSubShipmentQuantitiesDispatched(items: SubShipmentQuantityItem[], boxes: SubShipmentQuantityBox[]) {
+  return areRequiredQuantitiesCovered(items, boxes, { dispatchedOnly: true });
+}
+
+function sameDate(left: Date | null, right: Date | null) {
+  return (left?.getTime() ?? null) === (right?.getTime() ?? null);
 }
 
 export async function getSubShipmentAvailability(prisma: Db, shipmentId: string) {
@@ -241,28 +299,48 @@ export async function refreshParentShipmentDispatchStatus(prisma: Db, shipmentId
 export async function refreshSubShipmentStatusFromBoxes(prisma: Db, subShipmentId: string, dispatchedBy?: string) {
   const subShipment = await prisma.sub_shipments.findUnique({
     where: { id: subShipmentId },
-    include: { outbound_boxes: true },
+    include: {
+      outbound_boxes: true,
+      sub_shipment_items: {
+        select: {
+          shipment_line_item_id: true,
+          quantity: true,
+        },
+      },
+    },
   });
   if (!subShipment || subShipment.status === "completed" || subShipment.status === "cancelled") return subShipment;
 
   const boxes = subShipment.outbound_boxes;
   if (boxes.length === 0) return subShipment;
 
-  const allDispatched = areDispatchableBoxesDispatched(boxes);
-  const allLabelsUploaded = areDispatchableBoxLabelsReady(boxes);
+  const allQuantitiesBoxed = areSubShipmentQuantitiesBoxed(subShipment.sub_shipment_items, boxes);
+  const allQuantitiesDispatched = areSubShipmentQuantitiesDispatched(subShipment.sub_shipment_items, boxes);
+  const allDispatched = allQuantitiesDispatched && areDispatchableBoxesDispatched(boxes);
+  const allLabelsUploaded = allQuantitiesBoxed && areDispatchableBoxLabelsReady(boxes);
   const nextStatus: SubShipmentStatus = allDispatched
     ? "dispatched"
     : allLabelsUploaded
       ? "ready_to_dispatch"
       : "awaiting_fba_labels";
+  const nextDispatchedAt = allDispatched ? subShipment.dispatched_at ?? new Date() : null;
+  const nextDispatchedBy = allDispatched ? dispatchedBy ?? subShipment.dispatched_by : null;
+
+  if (
+    subShipment.status === nextStatus &&
+    sameDate(subShipment.dispatched_at, nextDispatchedAt) &&
+    subShipment.dispatched_by === nextDispatchedBy
+  ) {
+    return subShipment;
+  }
 
   const updated = await prisma.sub_shipments.update({
     where: { id: subShipmentId },
     data: {
       status: nextStatus,
       updated_at: new Date(),
-      dispatched_at: allDispatched ? subShipment.dispatched_at ?? new Date() : subShipment.dispatched_at,
-      dispatched_by: allDispatched ? dispatchedBy ?? subShipment.dispatched_by : subShipment.dispatched_by,
+      dispatched_at: nextDispatchedAt,
+      dispatched_by: nextDispatchedBy,
     },
   });
 

@@ -6,7 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { serializeUploadedFile } from "@/lib/shipmentContract";
 import { serializeShipmentNoteAttachments } from "@/lib/shipmentNoteAttachments";
-import { getSubShipmentAvailability } from "@/lib/subShipments";
+import { getSubShipmentAvailability, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 
 type JsonRecord = Record<string, any>;
 type ViewMode = "quick" | "detail";
@@ -772,6 +772,35 @@ function queryMode(req: Request): ViewMode {
   return mode === "quick" ? "quick" : "detail";
 }
 
+async function refreshShipmentSubShipmentStatuses(shipment: {
+  sub_shipments: JsonRecord[];
+  outbound_boxes: JsonRecord[];
+}) {
+  if (!shipment.sub_shipments.length) return;
+
+  const refreshedRows = await Promise.all(
+    shipment.sub_shipments.map((subShipment) => refreshSubShipmentStatusFromBoxes(prisma, String(subShipment.id))),
+  );
+  const refreshedById = new Map(refreshedRows.filter(Boolean).map((subShipment) => [subShipment!.id, subShipment!]));
+
+  for (const subShipment of shipment.sub_shipments) {
+    const refreshed = refreshedById.get(String(subShipment.id));
+    if (!refreshed) continue;
+    subShipment.status = refreshed.status;
+    subShipment.updated_at = refreshed.updated_at;
+    subShipment.dispatched_at = refreshed.dispatched_at;
+    subShipment.dispatched_by = refreshed.dispatched_by;
+  }
+
+  for (const box of shipment.outbound_boxes) {
+    const boxSubShipment = box.sub_shipments;
+    if (!boxSubShipment?.id) continue;
+    const refreshed = refreshedById.get(String(boxSubShipment.id));
+    if (!refreshed) continue;
+    boxSubShipment.status = refreshed.status;
+  }
+}
+
 export async function getShipmentViewBundle(
   req: Request,
   { params }: { params: { id: string } },
@@ -942,6 +971,9 @@ export async function getShipmentViewBundle(
     if (!shipment) throw new ApiError("Shipment not found", 404);
     if (user.role === "client") {
       if (!user.clientId || user.clientId !== shipment.client_id) throw new ApiError("Cannot access another client's data", 403);
+    }
+    if (mode === "detail") {
+      await refreshShipmentSubShipmentStatuses(shipment as unknown as { sub_shipments: JsonRecord[]; outbound_boxes: JsonRecord[] });
     }
 
     const lineItemIds = shipment.shipment_line_items.map((item) => item.id);

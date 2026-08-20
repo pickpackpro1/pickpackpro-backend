@@ -3,7 +3,7 @@ import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
-import { assertSubShipmentItemsAvailable, getSubShipmentAvailability } from "@/lib/subShipments";
+import { assertSubShipmentItemsAvailable, getSubShipmentAvailability, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const itemSchema = z.object({
@@ -61,6 +61,19 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     });
     if (!shipment) throw new ApiError("Shipment not found", 404);
     if (user.role === "client") await requireClientAccess(req, shipment.client_id);
+
+    const refreshedRows = await Promise.all(
+      shipment.sub_shipments.map((subShipment) => refreshSubShipmentStatusFromBoxes(prisma, subShipment.id)),
+    );
+    const refreshedById = new Map(refreshedRows.filter(Boolean).map((subShipment) => [subShipment!.id, subShipment!]));
+    for (const subShipment of shipment.sub_shipments) {
+      const refreshed = refreshedById.get(subShipment.id);
+      if (!refreshed) continue;
+      subShipment.status = refreshed.status;
+      subShipment.updated_at = refreshed.updated_at;
+      subShipment.dispatched_at = refreshed.dispatched_at;
+      subShipment.dispatched_by = refreshed.dispatched_by;
+    }
 
     const availability = await getSubShipmentAvailability(prisma, params.id);
     const subShipments = shipment.sub_shipments.map((subShipment) => {

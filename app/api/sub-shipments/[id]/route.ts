@@ -5,7 +5,7 @@ import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
 import { areDispatchableBoxesDispatched, serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
-import { refreshParentShipmentDispatchStatus } from "@/lib/subShipments";
+import { areSubShipmentQuantitiesDispatched, refreshParentShipmentDispatchStatus, refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const patchSchema = z.object({
@@ -47,6 +47,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     });
     if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
     if (user.role === "client") await requireClientAccess(req, subShipment.shipments.client_id);
+    const refreshed = await refreshSubShipmentStatusFromBoxes(prisma, subShipment.id);
+    if (refreshed) {
+      subShipment.status = refreshed.status;
+      subShipment.updated_at = refreshed.updated_at;
+      subShipment.dispatched_at = refreshed.dispatched_at;
+      subShipment.dispatched_by = refreshed.dispatched_by;
+    }
     const boxes = subShipment.outbound_boxes.map((box) =>
       serializeBoxOwnership(box, { subShipmentReference: subShipment.reference }),
     );
@@ -63,7 +70,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const updated = await prisma.$transaction(async (tx) => {
       const subShipment = await tx.sub_shipments.findUnique({
         where: { id: params.id },
-        include: { outbound_boxes: true },
+        include: {
+          outbound_boxes: true,
+          sub_shipment_items: {
+            select: {
+              shipment_line_item_id: true,
+              quantity: true,
+            },
+          },
+        },
       });
       if (!subShipment) throw new ApiError("Sub-shipment not found", 404);
 
@@ -73,8 +88,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
       if (body.status === "dispatched") {
         if (subShipment.outbound_boxes.length === 0) throw new ApiError("No boxes created for this sub-shipment", 422);
-        if (!areDispatchableBoxesDispatched(subShipment.outbound_boxes)) {
-          throw new ApiError("Dispatch all sub-shipment boxes or pallets before marking it dispatched", 422);
+        const allQuantitiesDispatched = areSubShipmentQuantitiesDispatched(subShipment.sub_shipment_items, subShipment.outbound_boxes);
+        if (!allQuantitiesDispatched || !areDispatchableBoxesDispatched(subShipment.outbound_boxes)) {
+          throw new ApiError("Box and dispatch all sub-shipment SKU quantities before marking it dispatched", 422);
         }
       }
 
