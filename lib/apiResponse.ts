@@ -20,6 +20,9 @@ export function handleApiError(err: unknown) {
     if (err.code === "P2028") {
       return error("The database transaction took too long to complete. Please retry the request.", 503, { code: err.code });
     }
+    if (err.code === "P2023") {
+      return error("Invalid ID format.", 400, { code: err.code });
+    }
     console.error("[api] Prisma request failed:", err);
     return error("Database request failed.", 500, { code: err.code });
   }
