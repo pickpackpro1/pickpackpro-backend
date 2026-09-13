@@ -39,6 +39,7 @@ export const draftItemSchema = z.object({
   fnskuLabel: z.string().optional().nullable(),
   fnsku_label: z.string().optional().nullable(),
   fnsku: z.string().optional().nullable(),
+  barcode: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
   services: z.array(z.string()).optional().nullable(),
   servicesSelected: z.array(z.string()).optional().nullable(),
@@ -120,6 +121,10 @@ function getFnsku(item: DraftShipmentItemInput) {
   return firstText(item.fnskuLabel, item.fnsku_label, item.fnsku, item.sku) ?? "";
 }
 
+function getBarcode(item: DraftShipmentItemInput) {
+  return firstText(item.barcode) ?? null;
+}
+
 function getServices(item: DraftShipmentItemInput) {
   return item.services ?? item.servicesSelected ?? item.services_selected ?? [];
 }
@@ -159,6 +164,7 @@ export function buildDraftPayload(input: {
     expected_qty: getExpectedQty(item),
     fnskuLabel: getFnsku(item),
     fnsku_label: getFnsku(item),
+    barcode: getBarcode(item),
     bundleSize: getBundleSize(item),
     bundle_size: getBundleSize(item),
     needsBundling: getNeedsBundling(item),
@@ -312,6 +318,7 @@ export async function createShipmentLineItems(
       return {
         id: product.id,
         defaultFnsku: getFnsku(item) || item.sku,
+        barcode: getBarcode(item),
         needsBundling: getNeedsBundling(item),
         bundleSize: getBundleSize(item),
       };
@@ -324,15 +331,16 @@ export async function createShipmentLineItems(
       update products as p
       set
         default_fnsku = updates.default_fnsku,
+        barcode = coalesce(nullif(updates.barcode, ''), p.barcode),
         needs_bundling = updates.needs_bundling,
         bundle_size = updates.bundle_size
       from (
         values ${Prisma.join(
           updateChunk.map((update) =>
-            Prisma.sql`(${update.id}::uuid, ${update.defaultFnsku}::text, ${update.needsBundling}::boolean, ${update.bundleSize}::integer)`,
+            Prisma.sql`(${update.id}::uuid, ${update.defaultFnsku}::text, ${update.barcode ?? ""}::text, ${update.needsBundling}::boolean, ${update.bundleSize}::integer)`,
           ),
         )}
-      ) as updates(id, default_fnsku, needs_bundling, bundle_size)
+      ) as updates(id, default_fnsku, barcode, needs_bundling, bundle_size)
       where p.id = updates.id
     `;
   }
@@ -349,6 +357,7 @@ export async function createShipmentLineItems(
         sku,
         product_name: firstItem.productName,
         default_fnsku: getFnsku(lastItem) || sku,
+        barcode: getBarcode(lastItem),
         length_cm: 0,
         width_cm: 0,
         height_cm: 0,
@@ -371,6 +380,7 @@ export async function createShipmentLineItems(
           select: {
             id: true,
             sku: true,
+            barcode: true,
             default_fnsku_label_file_id: true,
           },
         }),
@@ -413,6 +423,7 @@ export async function createShipmentLineItems(
       product_id: product.id,
       product_name: item.productName,
       fnsku: getFnsku(item) || item.sku,
+      barcode: getBarcode(item) ?? product.barcode ?? null,
       fnsku_label_file_id: fnskuLabelFileId,
       qty_expected: item.expectedQty,
       dispatch_qty: null,

@@ -74,6 +74,7 @@ async function getBatchShipmentServices(req: Request, input: z.infer<typeof batc
               sku: true,
               product_name: true,
               default_fnsku: true,
+              barcode: true,
             },
           },
         },

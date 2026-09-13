@@ -45,6 +45,7 @@ function normalizeHeader(value: string) {
 const headerAliases: Record<string, string[]> = {
   product_name: ["product_name", "product", "productname", "product_title", "name"],
   sku: ["sku", "seller_sku", "product_sku"],
+  barcode: ["barcode", "ean", "upc", "gtin", "ean_upc", "barcode_number"],
   default_fnsku: ["default_fnsku", "fnsku", "default_fnsku", "fnsku_label", "fnsku_code"],
   length_cm: ["length_cm", "length", "l", "length_cms"],
   width_cm: ["width_cm", "width", "w", "width_cms"],
@@ -129,6 +130,7 @@ export async function POST(req: Request) {
       rowNumber: number;
       productName: string;
       sku: string;
+      barcode: string | null | undefined;
       defaultFnsku: string | null;
       lengthCm: number;
       widthCm: number;
@@ -160,6 +162,8 @@ export async function POST(req: Request) {
           rowNumber,
           productName,
           sku,
+          // undefined when the CSV has no barcode column, so re-imports don't wipe existing barcodes
+          barcode: value(row, "barcode") === undefined ? undefined : value(row, "barcode") || null,
           defaultFnsku: value(row, "default_fnsku") || null,
           lengthCm: number(value(row, "length_cm"), "length_cm"),
           widthCm: number(value(row, "width_cm"), "width_cm"),
@@ -196,6 +200,7 @@ export async function POST(req: Request) {
           where: { client_id_sku: { client_id: clientId, sku: row.sku } },
           update: {
             product_name: row.productName,
+            barcode: row.barcode,
             default_fnsku: row.defaultFnsku,
             length_cm: row.lengthCm,
             width_cm: row.widthCm,
@@ -213,6 +218,7 @@ export async function POST(req: Request) {
             client_id: clientId,
             product_name: row.productName,
             sku: row.sku,
+            barcode: row.barcode ?? null,
             default_fnsku: row.defaultFnsku,
             length_cm: row.lengthCm,
             width_cm: row.widthCm,

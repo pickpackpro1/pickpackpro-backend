@@ -195,6 +195,7 @@ model products {
   client_id                                                           String                @db.Uuid
   product_name                                                        String
   sku                                                                 String
+  barcode                                                             String?
   default_fnsku                                                       String?
   default_fnsku_label_file_id                                         String?               @db.Uuid
   length_cm                                                           Decimal               @db.Decimal
@@ -216,6 +217,7 @@ model products {
 
   @@unique([client_id, sku])
   @@index([client_id], map: "idx_products_client_id")
+  @@index([client_id, barcode], map: "idx_products_client_barcode")
   @@index([default_fnsku_label_file_id], map: "idx_products_default_fnsku_label_file")
 }
 
@@ -241,6 +243,7 @@ model shipment_line_items {
   product_id           String               @db.Uuid
   product_name         String?
   fnsku                String
+  barcode              String?
   fnsku_label_file_id  String?              @db.Uuid
   qty_expected         Int
   qty_received         Int?
@@ -264,6 +267,7 @@ model shipment_line_items {
 
   @@index([product_id], map: "idx_line_items_product_id")
   @@index([shipment_id], map: "idx_line_items_shipment_id")
+  @@index([shipment_id, barcode], map: "idx_line_items_shipment_barcode")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.

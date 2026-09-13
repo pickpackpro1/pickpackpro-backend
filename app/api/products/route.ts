@@ -11,6 +11,7 @@ const productSchema = z
     clientId: z.string().uuid().optional(),
     productName: z.string().min(1),
     sku: z.string().min(1),
+    barcode: z.string().trim().max(32).optional().nullable(),
     defaultFnsku: z.string().optional().nullable(),
     lengthCm: z.coerce.number().nonnegative(),
     widthCm: z.coerce.number().nonnegative(),
@@ -46,6 +47,7 @@ export async function GET(req: Request) {
     const activeParam = url.searchParams.get("active");
     const statusParam = url.searchParams.get("status")?.trim().toLowerCase();
     const search = url.searchParams.get("search")?.trim();
+    const missingBarcode = url.searchParams.get("barcode")?.trim().toLowerCase() === "missing";
     const hasPagination = url.searchParams.has("page") || url.searchParams.has("limit");
     const page = positiveInt(url.searchParams.get("page"), 1);
     const limit = positiveInt(url.searchParams.get("limit"), 25, 100);
@@ -67,6 +69,7 @@ export async function GET(req: Request) {
       ? [
           { product_name: { contains: search, mode: "insensitive" } },
           { sku: { contains: search, mode: "insensitive" } },
+          { barcode: { contains: search, mode: "insensitive" } },
           { default_fnsku: { contains: search, mode: "insensitive" } },
           { clients: { is: { company_name: { contains: search, mode: "insensitive" } } } },
           { clients: { is: { email: { contains: search, mode: "insensitive" } } } },
@@ -76,12 +79,14 @@ export async function GET(req: Request) {
       client_id: clientId ?? undefined,
       soft_deleted_at: null,
       active,
+      ...(missingBarcode ? { barcode: null } : {}),
       ...(searchFilter.length ? { OR: searchFilter } : {}),
     };
     const select = {
       id: true,
       sku: true,
       product_name: true,
+      barcode: true,
       default_fnsku: true,
       default_fnsku_label_file_id: true,
       length_cm: true,
@@ -144,6 +149,7 @@ export async function POST(req: Request) {
         client_id: clientId,
         product_name: body.productName,
         sku: body.sku,
+        barcode: body.barcode || null,
         default_fnsku: body.defaultFnsku ?? null,
         length_cm: body.lengthCm,
         width_cm: body.widthCm,

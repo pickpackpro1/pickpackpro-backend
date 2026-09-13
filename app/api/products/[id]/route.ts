@@ -9,6 +9,7 @@ import { json } from "@/lib/validation";
 const patchSchema = z
   .object({
     productName: z.string().min(1).optional(),
+    barcode: z.string().trim().max(32).optional().nullable(),
     defaultFnsku: z.string().optional().nullable(),
     lengthCm: z.coerce.number().nonnegative().optional(),
     widthCm: z.coerce.number().nonnegative().optional(),
@@ -71,6 +72,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       where: { id: params.id },
       data: {
         product_name: body.productName,
+        barcode: body.barcode === undefined ? undefined : body.barcode || null,
         default_fnsku: body.defaultFnsku,
         length_cm: body.lengthCm,
         width_cm: body.widthCm,

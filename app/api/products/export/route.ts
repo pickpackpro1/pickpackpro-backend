@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 const columns = [
   "product_name",
   "sku",
+  "barcode",
   "default_fnsku",
   "length_cm",
   "width_cm",
@@ -46,6 +47,7 @@ export async function GET(req: Request) {
         [
           product.product_name,
           product.sku,
+          product.barcode,
           product.default_fnsku,
           product.length_cm,
           product.width_cm,
