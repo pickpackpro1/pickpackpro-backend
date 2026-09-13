@@ -173,6 +173,10 @@ model outbound_boxes {
   width_cm                   Decimal          @db.Decimal
   height_cm                  Decimal          @db.Decimal
   weight_kg                  Decimal          @db.Decimal
+  weight_override            Boolean          @default(false)
+  weight_override_reason     String?
+  weight_override_by         String?          @db.Uuid
+  heavy_package_flag         Boolean          @default(false)
   contents                   Json             @default("[]")
   fba_shipping_label_file_id String?          @db.Uuid
   label_uploaded_at          DateTime?        @db.Timestamptz(6)

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
+import { assertBoxWeightsReadyToSeal } from "@/lib/boxConstraints";
 import { sendEmail } from "@/lib/email";
 import { ensureShipmentDraftInvoice, ensureSubShipmentDraftInvoice } from "@/lib/invoicing";
 import { dispatchBoxOrPallet } from "@/lib/pallets";
@@ -15,6 +16,7 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
     const user = await requireRole(req, ["admin", "staff"]);
     await json(req, schema);
     const box = await prisma.$transaction(async (tx) => {
+      await assertBoxWeightsReadyToSeal(tx, params.boxId);
       const updatedBox = await dispatchBoxOrPallet(tx, params.boxId);
       const shipmentBeforeRefresh = await tx.shipments.findUnique({
         where: { id: updatedBox.shipment_id },

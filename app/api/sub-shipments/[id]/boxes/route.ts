@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireClientAccess, requireRole, requireUser } from "@/lib/auth";
 import { buildValidatedBoxContents, extractBoxAllocationInputs } from "@/lib/boxAllocations";
+import { boxWeightOverrideFields, overrideFromBody, resolveBoxWeightFields, weightOverrideAuditData } from "@/lib/boxConstraints";
 import { assertManualBoxNumberAvailable, manualBoxNumberFromBody, normalizeBoxSize, normalizeBoxType } from "@/lib/boxNumbers";
 import { getSubShipmentBoxesWorkflowState } from "@/lib/boxWorkflowState";
 import { serializeBoxOwnership } from "@/lib/pallets";
@@ -33,6 +34,7 @@ const schema = z.object({
   boxItems: z.array(z.unknown()).optional(),
   box_items: z.array(z.unknown()).optional(),
   contents: z.array(z.unknown()).optional(),
+  ...boxWeightOverrideFields,
 });
 
 function normalizedDimensions(body: z.infer<typeof schema>) {
@@ -119,13 +121,19 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
-    await requireRole(req, ["admin", "staff"]);
+    const user = await requireRole(req, ["admin", "staff"]);
     const includeWorkflow = new URL(req.url).searchParams.get("includeWorkflow") === "true";
     const body = await json(req, schema);
     const boxType = normalizeBoxType(body.boxType ?? body.box_type);
     const boxSize = normalizeBoxSize(body.boxSize ?? body.box_size ?? body.size);
     const manualBoxNumber = manualBoxNumberFromBody(body);
     const dims = normalizedDimensions(body);
+    const weightFields = resolveBoxWeightFields({
+      weightKg: normalizedWeight(body),
+      boxType,
+      ...overrideFromBody(body),
+      userId: user.userId,
+    });
     const box = await prisma.$transaction(async (tx) => {
       if (boxType === "pallet") {
         throw new ApiError("Use the pallet endpoint to create pallets from selected boxes", 422);
@@ -153,10 +161,13 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           length_cm: dims.l,
           width_cm: dims.w,
           height_cm: dims.h,
-          weight_kg: normalizedWeight(body),
+          ...weightFields,
           contents,
         },
       });
+      if (created.weight_override) {
+        await tx.audit_logs.create({ data: weightOverrideAuditData(user, created) });
+      }
       if (subShipment.status === "draft") {
         await tx.sub_shipments.update({
           where: { id: subShipment.id },
