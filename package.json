@@ -18,7 +18,9 @@
     "@prisma/client": "^6.19.3",
     "@supabase/supabase-js": "^2.76.1",
     "next": "^14.2.33",
+    "pdf-lib": "^1.17.1",
     "resend": "^6.12.3",
+    "unpdf": "^1.8.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
