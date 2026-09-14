@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ApiError, error, handleApiError, success } from "@/lib/apiResponse";
+import { findAppUserForAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { supabaseAnon } from "@/lib/supabase";
 import { json } from "@/lib/validation";
@@ -21,10 +22,10 @@ export async function POST(req: Request) {
       return error("Invalid email or password", 401);
     }
 
-    const appUser = await prisma.users.findUnique({
-      where: { email: auth.data.user.email },
-      include: { clients: true },
-    });
+    const appUser = await findAppUserForAuthUser(
+      { id: auth.data.user.id, email: auth.data.user.email },
+      { clients: true },
+    );
     if (!appUser) throw new ApiError("Application user profile not found", 403);
     if (!appUser.active) throw new ApiError("User account is disabled", 403);
 

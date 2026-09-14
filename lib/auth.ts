@@ -1,4 +1,4 @@
-import { Role } from "@prisma/client";
+import { Prisma, Role } from "@prisma/client";
 import { prisma } from "./prisma";
 import { supabaseAdmin } from "./supabase";
 import { ApiError } from "./apiResponse";
@@ -10,6 +10,21 @@ export type SessionUser = {
   role: Role;
   clientId: string | null;
 };
+
+// Supabase lower-cases login emails, but app user rows can keep the casing they were typed with
+// (e.g. "Support.cofe@gmail.com"), so match on the shared id first and compare emails case-insensitively.
+export function findAppUserForAuthUser<T extends Prisma.usersInclude | undefined = undefined>(
+  authUser: { id: string; email: string },
+  include?: T,
+) {
+  return prisma.users.findFirst({
+    where: {
+      OR: [{ id: authUser.id }, { email: { equals: authUser.email, mode: "insensitive" } }],
+    },
+    orderBy: { created_at: "asc" },
+    include,
+  }) as Promise<Prisma.usersGetPayload<{ include: T }> | null>;
+}
 
 // In-memory cache — survives for 60 seconds per token
 const userCache = new Map<string, { user: SessionUser; exp: number }>();
@@ -65,7 +80,7 @@ export async function getSessionUser(req: Request): Promise<SessionUser | null> 
   const { data, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !data.user?.email) return null;
 
-  const dbUser = await prisma.users.findUnique({ where: { email: data.user.email } });
+  const dbUser = await findAppUserForAuthUser({ id: data.user.id, email: data.user.email });
   if (!dbUser || !dbUser.active) return null;
 
   const sessionUser: SessionUser = {
