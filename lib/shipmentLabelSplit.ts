@@ -1,5 +1,5 @@
 import { ApiError } from "@/lib/apiResponse";
-import { buildPdfFromPages, loadPdf, scanFnskuPages } from "@/lib/fnskuPdfSplit";
+import { buildPdfFromPages, labelsAreIdentical, loadPdf, pageSequenceForQuantity, scanFnskuPages } from "@/lib/fnskuPdfSplit";
 import { prisma } from "@/lib/prisma";
 import { bucketFor, supabaseAdmin } from "@/lib/supabase";
 
@@ -26,20 +26,32 @@ function publicUrlFor(file: { file_type: string; storage_path: string }) {
 
 export type IsolatedLabelResult = {
   url: string;
-  /** Pages in the file that will actually be printed */
+  /** How many labels the prepared file holds — what will actually print */
   pages: number;
   /** True when the file now holds only this product's labels */
   isolated: boolean;
   /** True when no new file had to be made (it was already just this product) */
   alreadyIsolated: boolean;
   fnsku: string;
+  /** How many labels the client's file actually supplied for this product */
+  suppliedLabels?: number;
+  /** How many extra copies were made to cover the shipment quantity */
+  copiesAdded?: number;
   warning?: string;
 };
 
 // Printing must never open the client's whole multi-product PDF. Before a label is printed we pull
 // out just this line's own FNSKU pages, so staff get that product's labels and nothing else —
 // whether or not anyone ran "Split label PDF" on the shipment first.
-export async function isolateLineItemLabel(input: { lineItemId: string; actor: Actor }): Promise<IsolatedLabelResult> {
+//
+// Clients often send fewer labels than units (4 labels for 20 units). Plain FNSKU labels are the
+// same barcode repeated, so the missing ones are copied to cover the shipment quantity. Serialised
+// labels (Amazon Transparency, a different code per unit) are never copied.
+export async function isolateLineItemLabel(input: {
+  lineItemId: string;
+  actor: Actor;
+  quantity?: number;
+}): Promise<IsolatedLabelResult> {
   const item = await prisma.shipment_line_items.findUnique({
     where: { id: input.lineItemId },
     include: {
@@ -69,9 +81,18 @@ export async function isolateLineItemLabel(input: { lineItemId: string; actor: A
   const scan = await scanFnskuPages(pdfBytes);
   const pages = scan.pagesByFnsku[fnsku];
 
-  // The file is already only this product (an earlier split, or the client uploaded it per-product).
-  if (pages?.length && pages.length === scan.totalPages && Object.keys(scan.pagesByFnsku).length === 1) {
-    return { url: publicUrlFor(source), pages: pages.length, isolated: true, alreadyIsolated: true, fnsku };
+  // How many labels this product actually needs.
+  const shipmentQty = item.dispatch_qty ?? item.qty_received ?? item.qty_expected ?? 0;
+  const wanted = Math.max(0, Math.trunc(input.quantity ?? shipmentQty)) || pages?.length || 0;
+
+  // Already exactly this product, in the right number — nothing to redo.
+  if (
+    pages?.length &&
+    pages.length === scan.totalPages &&
+    Object.keys(scan.pagesByFnsku).length === 1 &&
+    pages.length === wanted
+  ) {
+    return { url: publicUrlFor(source), pages: pages.length, isolated: true, alreadyIsolated: true, fnsku, suppliedLabels: pages.length };
   }
   // Never block printing: fall back to the whole file and say why.
   if (!pages?.length) {
@@ -95,8 +116,19 @@ export async function isolateLineItemLabel(input: { lineItemId: string; actor: A
     };
   }
 
-  const labelBytes = await buildPdfFromPages(await loadPdf(pdfBytes), pages);
-  const fileName = `${safeFilePart(item.products.sku || fnsku)}-${fnsku}-${pages.length}-labels.pdf`;
+  // Top up to the shipment quantity when the client sent fewer labels than units — but only when
+  // every supplied label is the same barcode. Different codes mean serialised labels: never copy those.
+  const identical = labelsAreIdentical(scan, pages);
+  const canTopUp = identical && wanted > pages.length;
+  const printSequence = canTopUp || wanted < pages.length ? pageSequenceForQuantity(pages, wanted) : pages;
+  const copiesAdded = Math.max(0, printSequence.length - pages.length);
+  const shortWarning =
+    !identical && wanted > pages.length
+      ? `This product's labels are all different (serialised), so they can't be copied. The file has ${pages.length} for ${wanted} units — ask the client for the rest.`
+      : undefined;
+
+  const labelBytes = await buildPdfFromPages(await loadPdf(pdfBytes), printSequence);
+  const fileName = `${safeFilePart(item.products.sku || fnsku)}-${fnsku}-${printSequence.length}-labels.pdf`;
   const storagePath = `item/${item.id}/fnsku_label/${Date.now()}-${fileName}`;
   const upload = await supabaseAdmin.storage
     .from(bucket)
@@ -114,7 +146,15 @@ export async function isolateLineItemLabel(input: { lineItemId: string; actor: A
       mime_type: "application/pdf",
       linked_entity_type: "item",
       linked_entity_id: item.id,
-      metadata: { splitFromFileId: source.id, fnsku, sku: item.products.sku, pages },
+      metadata: {
+        splitFromFileId: source.id,
+        fnsku,
+        sku: item.products.sku,
+        pages,
+        labelCount: printSequence.length,
+        suppliedLabels: pages.length,
+        copiesAdded,
+      },
     },
   });
   await prisma.shipment_line_items.update({
@@ -122,7 +162,16 @@ export async function isolateLineItemLabel(input: { lineItemId: string; actor: A
     data: { fnsku_label_file_id: record.id, updated_at: new Date() },
   });
 
-  return { url: publicUrlFor(record), pages: pages.length, isolated: true, alreadyIsolated: false, fnsku };
+  return {
+    url: publicUrlFor(record),
+    pages: printSequence.length,
+    isolated: true,
+    alreadyIsolated: false,
+    fnsku,
+    suppliedLabels: pages.length,
+    copiesAdded,
+    warning: shortWarning,
+  };
 }
 
 // Splits one multi-product FNSKU label PDF into a label file per shipment line, matched by the FNSKU text on each page.

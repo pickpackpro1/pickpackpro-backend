@@ -12,7 +12,24 @@ export type FnskuPageScan = {
   pagesWithoutFnsku: number[];
   /** Pages carrying more than one FNSKU (label-sheet layout) that can't be split by page */
   multiLabelPages: number[];
+  /** 1-based page number -> its text, so identical labels can be told apart from serialised ones */
+  textByPage: Record<number, string>;
 };
+
+// Plain FNSKU labels repeat the same barcode, so one can be reprinted as many times as needed.
+// Serialised labels (Amazon Transparency) carry a different code per unit and must never be copied.
+export function labelsAreIdentical(scan: FnskuPageScan, pageNumbers: number[]) {
+  if (pageNumbers.length < 2) return true;
+  const first = scan.textByPage[pageNumbers[0]] ?? "";
+  return pageNumbers.every((pageNumber) => (scan.textByPage[pageNumber] ?? "") === first);
+}
+
+/** Repeats the available label pages until `wanted` labels are lined up (or trims to `wanted`). */
+export function pageSequenceForQuantity(pageNumbers: number[], wanted: number) {
+  if (wanted <= 0 || pageNumbers.length === 0) return [];
+  if (wanted <= pageNumbers.length) return pageNumbers.slice(0, wanted);
+  return Array.from({ length: wanted }, (_unused, index) => pageNumbers[index % pageNumbers.length]);
+}
 
 export async function scanFnskuPages(pdfBytes: Uint8Array): Promise<FnskuPageScan> {
   // pdf.js detaches the buffer it is given, so hand it a copy and keep the original for pdf-lib.
@@ -21,6 +38,7 @@ export async function scanFnskuPages(pdfBytes: Uint8Array): Promise<FnskuPageSca
   const pagesByFnsku: Record<string, number[]> = {};
   const pagesWithoutFnsku: number[] = [];
   const multiLabelPages: number[] = [];
+  const textByPage: Record<number, string> = {};
 
   for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
@@ -30,6 +48,7 @@ export async function scanFnskuPages(pdfBytes: Uint8Array): Promise<FnskuPageSca
       .map((item) => ("str" in item ? item.str : ""))
       .join("\n")
       .toUpperCase();
+    textByPage[pageNumber] = pageText;
     const codes = [...new Set(pageText.match(FNSKU_PATTERN) ?? [])];
     if (codes.length === 0) {
       pagesWithoutFnsku.push(pageNumber);
@@ -39,7 +58,7 @@ export async function scanFnskuPages(pdfBytes: Uint8Array): Promise<FnskuPageSca
     for (const code of codes) (pagesByFnsku[code] ??= []).push(pageNumber);
   }
 
-  return { totalPages, pagesByFnsku, pagesWithoutFnsku, multiLabelPages };
+  return { totalPages, pagesByFnsku, pagesWithoutFnsku, multiLabelPages, textByPage };
 }
 
 export async function loadPdf(pdfBytes: Uint8Array) {
