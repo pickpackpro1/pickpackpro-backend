@@ -20,6 +20,111 @@ function safeFilePart(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 60) || "label";
 }
 
+function publicUrlFor(file: { file_type: string; storage_path: string }) {
+  return supabaseAdmin.storage.from(bucketFor(file.file_type)).getPublicUrl(file.storage_path).data.publicUrl;
+}
+
+export type IsolatedLabelResult = {
+  url: string;
+  /** Pages in the file that will actually be printed */
+  pages: number;
+  /** True when the file now holds only this product's labels */
+  isolated: boolean;
+  /** True when no new file had to be made (it was already just this product) */
+  alreadyIsolated: boolean;
+  fnsku: string;
+  warning?: string;
+};
+
+// Printing must never open the client's whole multi-product PDF. Before a label is printed we pull
+// out just this line's own FNSKU pages, so staff get that product's labels and nothing else —
+// whether or not anyone ran "Split label PDF" on the shipment first.
+export async function isolateLineItemLabel(input: { lineItemId: string; actor: Actor }): Promise<IsolatedLabelResult> {
+  const item = await prisma.shipment_line_items.findUnique({
+    where: { id: input.lineItemId },
+    include: {
+      products: { select: { sku: true } },
+      uploaded_files: true,
+      shipments: { select: { client_id: true } },
+    },
+  });
+  if (!item) throw new ApiError("Shipment line item not found", 404);
+
+  const source = item.uploaded_files;
+  if (!source) throw new ApiError("No FNSKU label has been uploaded for this product yet.", 422, { code: "NO_LABEL_FILE" });
+
+  const fnsku = item.fnsku.trim().toUpperCase();
+  const isPdf = source.mime_type === "application/pdf" || source.original_filename.toLowerCase().endsWith(".pdf");
+  // Image/CSV labels are a single label already — nothing to pull apart.
+  if (!isPdf) {
+    return { url: publicUrlFor(source), pages: 1, isolated: true, alreadyIsolated: true, fnsku };
+  }
+
+  const bucket = bucketFor(source.file_type);
+  const download = await supabaseAdmin.storage.from(bucket).download(source.storage_path);
+  if (download.error || !download.data) {
+    throw new ApiError(`Could not download the label file: ${download.error?.message ?? "empty file"}`, 502);
+  }
+  const pdfBytes = new Uint8Array(await download.data.arrayBuffer());
+  const scan = await scanFnskuPages(pdfBytes);
+  const pages = scan.pagesByFnsku[fnsku];
+
+  // The file is already only this product (an earlier split, or the client uploaded it per-product).
+  if (pages?.length && pages.length === scan.totalPages && Object.keys(scan.pagesByFnsku).length === 1) {
+    return { url: publicUrlFor(source), pages: pages.length, isolated: true, alreadyIsolated: true, fnsku };
+  }
+  // Never block printing: fall back to the whole file and say why.
+  if (!pages?.length) {
+    return {
+      url: publicUrlFor(source),
+      pages: scan.totalPages,
+      isolated: false,
+      alreadyIsolated: false,
+      fnsku,
+      warning: `${fnsku} was not found in this label file, so the whole file is shown.`,
+    };
+  }
+  if (scan.multiLabelPages.some((page) => pages.includes(page))) {
+    return {
+      url: publicUrlFor(source),
+      pages: scan.totalPages,
+      isolated: false,
+      alreadyIsolated: false,
+      fnsku,
+      warning: "These labels are laid out several per page, so the whole file is shown. Ask the client for one label per page.",
+    };
+  }
+
+  const labelBytes = await buildPdfFromPages(await loadPdf(pdfBytes), pages);
+  const fileName = `${safeFilePart(item.products.sku || fnsku)}-${fnsku}-${pages.length}-labels.pdf`;
+  const storagePath = `item/${item.id}/fnsku_label/${Date.now()}-${fileName}`;
+  const upload = await supabaseAdmin.storage
+    .from(bucket)
+    .upload(storagePath, labelBytes, { contentType: "application/pdf", upsert: false });
+  if (upload.error) throw new ApiError(`Could not save the isolated label: ${upload.error.message}`, 502);
+
+  const record = await prisma.uploaded_files.create({
+    data: {
+      uploader_user_id: input.actor.userId,
+      client_id: item.shipments.client_id,
+      file_type: "fnsku_label",
+      original_filename: fileName,
+      storage_path: storagePath,
+      file_size_bytes: labelBytes.byteLength,
+      mime_type: "application/pdf",
+      linked_entity_type: "item",
+      linked_entity_id: item.id,
+      metadata: { splitFromFileId: source.id, fnsku, sku: item.products.sku, pages },
+    },
+  });
+  await prisma.shipment_line_items.update({
+    where: { id: item.id },
+    data: { fnsku_label_file_id: record.id, updated_at: new Date() },
+  });
+
+  return { url: publicUrlFor(record), pages: pages.length, isolated: true, alreadyIsolated: false, fnsku };
+}
+
 // Splits one multi-product FNSKU label PDF into a label file per shipment line, matched by the FNSKU text on each page.
 // Storage uploads can't join a DB transaction, so each line is saved independently and failures are reported per line.
 export async function splitShipmentLabelPdf(input: {
