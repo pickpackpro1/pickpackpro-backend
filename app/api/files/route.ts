@@ -176,15 +176,23 @@ export async function POST(req: Request) {
     });
     // Link when entityType is 'item' or 'label' (line item UUID passed directly)
     if ((entityType === "label" || entityType === "item") && fileType === "fnsku_label") {
+      const previousLabelId = (
+        await prisma.shipment_line_items.findUnique({ where: { id: entityId }, select: { fnsku_label_file_id: true } })
+      )?.fnsku_label_file_id;
       const lineItem = await prisma.shipment_line_items.update({
         where: { id: entityId },
         data: { fnsku_label_file_id: record.id, updated_at: new Date() },
         select: { product_id: true },
       });
+      // The product's default label is set from the first one uploaded. If that was the wrong one being
+      // replaced, move the default along too — otherwise every future shipment keeps picking up the mistake.
       await prisma.products.updateMany({
         where: {
           id: lineItem.product_id,
-          default_fnsku_label_file_id: null,
+          OR: [
+            { default_fnsku_label_file_id: null },
+            ...(previousLabelId ? [{ default_fnsku_label_file_id: previousLabelId }] : []),
+          ],
         },
         data: { default_fnsku_label_file_id: record.id },
       });

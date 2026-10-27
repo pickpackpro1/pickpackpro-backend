@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { ApiError, handleApiError, success } from "@/lib/apiResponse";
 import { requireRole } from "@/lib/auth";
+import { correctionAudit, isFinalShipmentStatus } from "@/lib/adminCorrections";
 import { boxWeightOverrideFields, overrideFromBody, resolveBoxWeightFields, weightOverrideAuditData } from "@/lib/boxConstraints";
 import { serializeBoxOwnership } from "@/lib/pallets";
 import { prisma } from "@/lib/prisma";
+import { refreshSubShipmentStatusFromBoxes } from "@/lib/subShipments";
 import { json } from "@/lib/validation";
 
 const patchSchema = z.object({
@@ -27,7 +29,9 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
     const updated = await prisma.$transaction(async (tx) => {
       const before = await tx.outbound_boxes.findUnique({ where: { id: params.boxId } });
       if (!before) throw new ApiError("Box not found", 404);
-      if (before.dispatched_at) throw new ApiError("Dispatched boxes cannot be edited", 422);
+      // Staff can't touch a sealed box; an admin can fix a wrong weight/size after the fact (billing
+      // is driven by box contents, not dimensions, so this is safe).
+      if (before.dispatched_at && user.role !== "admin") throw new ApiError("Dispatched boxes cannot be edited", 422);
 
       const requestedWeight = body.weightKg ?? body.weight_kg ?? body.weight;
       const weightFields =
@@ -55,7 +59,7 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
           user_id: user.userId,
           user_email: user.email,
           user_role: user.role,
-          action: "box.updated",
+          action: before.dispatched_at ? "box.corrected_after_dispatch" : "box.updated",
           entity_type: "box",
           entity_id: box.id,
           before_value: JSON.parse(JSON.stringify(before)),
@@ -75,12 +79,70 @@ export async function PATCH(req: Request, { params }: { params: { boxId: string 
 
 export async function DELETE(req: Request, { params }: { params: { boxId: string } }) {
   try {
-    await requireRole(req, ["admin", "staff"]);
-    const box = await prisma.outbound_boxes.findUnique({ where: { id: params.boxId } });
-    if (!box) throw new ApiError("Box not found", 404);
-    if (box.dispatched_at) throw new ApiError("Cannot delete sealed box", 422);
-    if (box.pallet_id) throw new ApiError("Remove the box from its pallet before deleting it", 422);
-    await prisma.outbound_boxes.delete({ where: { id: params.boxId } });
+    const user = await requireRole(req, ["admin", "staff"]);
+    const isAdmin = user.role === "admin";
+
+    await prisma.$transaction(async (tx) => {
+      const box = await tx.outbound_boxes.findUnique({
+        where: { id: params.boxId },
+        include: {
+          shipments: { select: { status: true, reference: true } },
+          sub_shipments: { select: { status: true, reference: true } },
+        },
+      });
+      if (!box) throw new ApiError("Box not found", 404);
+
+      if (box.dispatched_at) {
+        if (!isAdmin) throw new ApiError("Cannot delete sealed box", 422);
+        // An invoice is generated once the shipment (or its sub-shipment) is dispatched — don't pull boxes out from under it.
+        const subFinal = box.sub_shipments && ["dispatched", "completed"].includes(box.sub_shipments.status);
+        if (isFinalShipmentStatus(box.shipments.status) || subFinal) {
+          throw new ApiError(
+            "This box belongs to a shipment that has already been dispatched and invoiced, so it can't be deleted.",
+            422,
+            { code: "SHIPMENT_FINAL" },
+          );
+        }
+      }
+      if (box.pallet_id && !isAdmin) throw new ApiError("Remove the box from its pallet before deleting it", 422);
+
+      await tx.outbound_boxes.delete({ where: { id: params.boxId } });
+
+      if (box.sub_shipment_id) {
+        await refreshSubShipmentStatusFromBoxes(tx, box.sub_shipment_id);
+        // refresh leaves an emptied sub-shipment alone, so put it back to the start.
+        const remaining = await tx.outbound_boxes.count({ where: { sub_shipment_id: box.sub_shipment_id } });
+        if (remaining === 0) {
+          await tx.sub_shipments.updateMany({
+            where: { id: box.sub_shipment_id, status: { in: ["awaiting_fba_labels", "ready_to_dispatch"] } },
+            data: { status: "draft", updated_at: new Date() },
+          });
+        }
+      }
+
+      await tx.audit_logs.create({
+        data: correctionAudit(
+          user,
+          box.dispatched_at ? "box.deleted_after_dispatch" : "box.deleted",
+          "box",
+          box.id,
+          {
+            boxNumber: box.manual_box_number ?? box.box_number,
+            boxType: box.box_type,
+            lengthCm: Number(box.length_cm),
+            widthCm: Number(box.width_cm),
+            heightCm: Number(box.height_cm),
+            weightKg: Number(box.weight_kg),
+            contents: box.contents,
+            shipmentReference: box.shipments.reference,
+            subShipmentReference: box.sub_shipments?.reference ?? null,
+            wasDispatched: Boolean(box.dispatched_at),
+          },
+          null,
+        ),
+      });
+    });
+
     return success({ deleted: true });
   } catch (err) {
     return handleApiError(err);
